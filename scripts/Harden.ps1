@@ -230,6 +230,11 @@ if ($isDC) {
 
 # ------------------------------------------------------------------ 4. credential theft protection
 Step 'Credential protection'
+$wl = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
+$wlKey = Get-Item -LiteralPath $wl -ErrorAction SilentlyContinue
+if ($wlKey -and $wlKey.GetValue('DefaultPassword', $null)) { Say "  Winlogon stored a plain-text password for '$($wlKey.GetValue('DefaultUserName', ''))' (write it down if a forensics question asks)" 'Yellow' }
+Remove-RegValue $wl 'DefaultPassword'
+if ($wlKey -and [string]$wlKey.GetValue('AutoAdminLogon', '') -eq '1') { Set-Reg $wl 'AutoAdminLogon' '0' 'String' }
 Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\WDigest' 'UseLogonCredential' 0
 Set-Reg $L 'RunAsPPL' 1                            # LSA protection, needs reboot
 Set-Reg 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Installer' 'AlwaysInstallElevated' 0
@@ -290,6 +295,12 @@ Set-Reg 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Attachments' '
 Set-Reg 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Attachments' 'SaveZoneInformation' 2
 Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Control\Remote Assistance' 'fAllowToGetHelp' 0
 Set-Reg 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services' 'fAllowToGetHelp' 0
+# WinRM: no Basic auth, no unencrypted traffic (does not turn WinRM on or off)
+foreach ($side in 'Service','Client') {
+    Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WinRM\$side" 'AllowBasic' 0
+    Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WinRM\$side" 'AllowUnencryptedTraffic' 0
+}
+Set-Reg 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WinRM\Client' 'AllowDigest' 0
 $hp = 'HKLM\SOFTWARE\Policies\Microsoft\Windows\NetworkProvider\HardenedPaths'
 foreach ($share in '\\*\SYSVOL','\\*\NETLOGON') {
     # reg.exe because the value name contains * (PowerShell would treat it as a wildcard)
@@ -321,6 +332,8 @@ if ((Get-ItemProperty -LiteralPath $ts -ErrorAction SilentlyContinue).fDenyTSCon
     Say '  Also decide who may use RDP: Remote Desktop Users group / "Allow log on through Remote Desktop Services".' 'Yellow'
 } else {
     Say '  RDP is off - not touching it. If the README says RDP is required, turn it on in System Properties > Remote and run this again.'
+    $tspKey = Get-Item -LiteralPath 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services' -ErrorAction SilentlyContinue
+    if ($tspKey -and $tspKey.GetValue('UserAuthentication', $null) -eq 0) { Set-Reg 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services' 'UserAuthentication' 1 }
 }
 
 # ------------------------------------------------------------------ 10. updates

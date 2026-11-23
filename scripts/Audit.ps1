@@ -188,6 +188,21 @@ else {
     }
 
     Out-Line ''
+    Info 'Fine-grained password policies (a weak one silently overrides the Default Domain Policy for its members):'
+    foreach ($pso in Get-ADFineGrainedPasswordPolicy -Filter * -ErrorAction SilentlyContinue) {
+        $to = ($pso.AppliesTo | ForEach-Object { ($_ -split ',')[0] -replace '^CN=' }) -join ', '
+        $line = "PSO '{0}' (precedence {1}) min length {2}, complexity {3}, reversible {4}, lockout {5}, applies to: {6}" -f $pso.Name, $pso.Precedence, $pso.MinPasswordLength, $pso.ComplexityEnabled, $pso.ReversibleEncryptionEnabled, $pso.LockoutThreshold, $to
+        if ($pso.MinPasswordLength -lt 12 -or -not $pso.ComplexityEnabled -or $pso.ReversibleEncryptionEnabled -or $pso.LockoutThreshold -lt 5) { Flag $line } else { Check $line }
+    }
+    $maq = (Get-ADObject (Get-ADDomain).DistinguishedName -Properties 'ms-DS-MachineAccountQuota').'ms-DS-MachineAccountQuota'
+    if ($maq -gt 0) { Check "ms-DS-MachineAccountQuota = $maq (any user can join $maq computers to the domain; CIS recommends 0)" }
+    $nlp = 'HKLM:\SYSTEM\CurrentControlSet\Services\Netlogon\Parameters'
+    if (Get-RegValue $nlp 'VulnerableChannelAllowList') { Flag "Netlogon VulnerableChannelAllowList is set (re-opens Zerologon for: $(Get-RegValue $nlp 'VulnerableChannelAllowList'))" }
+    if ((Get-RegValue $nlp 'FullSecureChannelProtection') -eq 0) { Flag 'Netlogon FullSecureChannelProtection = 0 (Zerologon enforcement off)' }
+    $cb = Get-RegValue 'HKLM:\SYSTEM\CurrentControlSet\Services\NTDS\Parameters' 'LdapEnforceChannelBinding'
+    if ($cb -ne 2) { Check "LDAP channel binding (LdapEnforceChannelBinding) = $(if ($null -eq $cb) {'not set'} else {$cb}) (2 = always)" }
+
+    Out-Line ''
     Info 'Group Policy Objects and who can edit them (gpmc.msc > GPO > Delegation):'
     Import-Module GroupPolicy -ErrorAction SilentlyContinue
     foreach ($gpo in Get-GPO -All -ErrorAction SilentlyContinue) {
@@ -311,6 +326,18 @@ $opts = @(
     ,@('HKLM:\SOFTWARE\Policies\Microsoft\Windows\System','EnableSmartScreen',1,'SmartScreen on')
     ,@('HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon','AllocateCDRoms','1','Restrict CD-ROM access to locally logged-on user')
     ,@('HKLM:\SYSTEM\CurrentControlSet\Control\Print\Providers\LanMan Print Services\Servers','AddPrinterDrivers',1,'Prevent users from installing printer drivers')
+    ,@('HKLM:\SYSTEM\CurrentControlSet\Control\Lsa','DisableDomainCreds',1,'Do not allow storage of passwords for network authentication')
+    ,@('HKLM:\SYSTEM\CurrentControlSet\Control\Lsa\MSV1_0','NTLMMinClientSec',537395200,'NTLM clients: require NTLMv2 session security + 128-bit')
+    ,@('HKLM:\SYSTEM\CurrentControlSet\Control\Lsa\MSV1_0','NTLMMinServerSec',537395200,'NTLM servers: require NTLMv2 session security + 128-bit')
+    ,@('HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters','EnableForcedLogOff',1,'Disconnect clients when logon hours expire')
+    ,@('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System','ConsentPromptBehaviorUser',0,'UAC: automatically deny elevation for standard users')
+    ,@('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System','EnableInstallerDetection',1,'UAC: detect application installations')
+    ,@('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System','EnableSecureUIAPaths',1,'UAC: only elevate UIAccess apps in secure locations')
+    ,@('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System','EnableVirtualization',1,'UAC: virtualize file and registry write failures')
+    ,@('HKLM:\SYSTEM\CurrentControlSet\Services\Netlogon\Parameters','RequireSignOrSeal',1,'Domain member: encrypt or sign secure channel (always)')
+    ,@('HKLM:\SYSTEM\CurrentControlSet\Services\Netlogon\Parameters','RequireStrongKey',1,'Domain member: require strong session key')
+    ,@('HKLM:\SYSTEM\CurrentControlSet\Services\LDAP','LDAPClientIntegrity',1,'LDAP client signing = Negotiate signing')
+    ,@('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer','NoAutorun',1,'Turn off Autorun')
 )
 foreach ($o in $opts) {
     $v = Get-RegValue $o[0] $o[1]
@@ -318,6 +345,10 @@ foreach ($o in $opts) {
     elseif ([string]$v -eq [string]$o[2]) { Good ("{0,-62} = {1}" -f $o[3], $v) }
     else { Flag ("{0,-62} = {1}  (want {2})" -f $o[3], $v, $o[2]) }
 }
+$idle = Get-RegValue 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' 'InactivityTimeoutSecs'
+if ($null -eq $idle) { Check ("{0,-62} not set (want 1-900)" -f 'Interactive logon: machine inactivity limit (seconds)') }
+elseif ($idle -ge 1 -and $idle -le 900) { Good ("{0,-62} = {1}" -f 'Interactive logon: machine inactivity limit (seconds)', $idle) }
+else { Flag ("{0,-62} = {1}  (want 1-900)" -f 'Interactive logon: machine inactivity limit (seconds)', $idle) }
 $hku = Get-RegValue 'HKCU:\SOFTWARE\Policies\Microsoft\Windows\Installer' 'AlwaysInstallElevated'
 if ($hku -eq 1) { Flag 'HKCU AlwaysInstallElevated = 1' }
 
@@ -397,6 +428,7 @@ $pref = Get-MpPreference
 foreach ($n in 'ExclusionPath','ExclusionProcess','ExclusionExtension','ExclusionIpAddress') {
     if ($pref.$n) { Check "Defender $n : $($pref.$n -join '; ')   (remove unless it is the scoring engine, e.g. C:\aeacus on some practice images)" }
 }
+foreach ($x in @($pref.ExclusionPath) | Where-Object { $_ -match '^[A-Za-z]:\\?$' }) { Flag "Defender excludes the whole $x drive" }
 $defPol = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender'
 foreach ($n in 'DisableAntiSpyware','DisableAntiVirus') { if ((Get-RegValue $defPol $n) -eq 1) { Flag "Policy $n = 1 (Defender disabled by policy)" } }
 foreach ($n in 'DisableRealtimeMonitoring','DisableBehaviorMonitoring','DisableOnAccessProtection','DisableScanOnRealtimeEnable','DisableIOAVProtection') {
@@ -407,7 +439,7 @@ if ($pref) {
     if ($pref.MAPSReporting -eq 0) { Check 'Cloud-delivered protection (MAPS) is off' }
     if ($pref.PUAProtection -ne 1) { Check 'Potentially unwanted app (PUA) blocking is off' }
     if ($pref.EnableControlledFolderAccess -ne 1) { Check 'Controlled folder access is off (test before enabling: it can stop README apps from saving to Documents)' }
-    $asrIds = @($pref.AttackSurfaceReductionRules_Ids) | Where-Object { $_ }
+    $asrIds = @(@($pref.AttackSurfaceReductionRules_Ids) | Where-Object { $_ })   # @() keeps a single rule as a list
     $asrAct = @($pref.AttackSurfaceReductionRules_Actions)
     if ($asrIds.Count -eq 0) { Check 'No Attack Surface Reduction (ASR) rules configured' }
     for ($i = 0; $i -lt $asrIds.Count; $i++) {
@@ -471,6 +503,14 @@ if ($rdpOff -eq 0) {
     $lvl = Get-RegValue 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' 'SecurityLayer'
     if ($lvl -ne 2) { Check "RDP SecurityLayer = $lvl (2 = TLS)" }
 } else { Info 'Remote Desktop is off' }
+$tsPol = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
+if ((Get-RegValue $tsPol 'UserAuthentication') -eq 0) { Flag 'Group Policy turns OFF RDP Network Level Authentication (Terminal Services\UserAuthentication = 0)' }
+if ((Get-RegValue $tsPol 'fDenyTSConnections') -eq 0) { Check 'Group Policy forces Remote Desktop ON (Terminal Services\fDenyTSConnections = 0)' }
+$wrm = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WinRM'
+foreach ($side in 'Service','Client') {
+    if ((Get-RegValue "$wrm\$side" 'AllowBasic') -eq 1) { Flag "WinRM $side allows Basic authentication" }
+    if ((Get-RegValue "$wrm\$side" 'AllowUnencryptedTraffic') -eq 1) { Flag "WinRM $side allows unencrypted traffic" }
+}
 
 Info 'Optional features that are usually unwanted:'
 foreach ($f in 'SMB1Protocol','MicrosoftWindowsPowerShellV2Root','MicrosoftWindowsPowerShellV2','TelnetClient','TFTP','IIS-FTPServer','SimpleTCP','Printing-Foundation-LPDPrintService') {
@@ -521,6 +561,7 @@ foreach ($n in $mustRun) {
     if (-not $s) { if ($n -ne 'WinDefend') { Flag "Service $n is missing" } else { Check 'Defender service (WinDefend) not present' }; continue }
     if ($s.StartType -eq 'Disabled' -or $s.Status -ne 'Running') { Flag ("{0,-18} {1} / {2}  <- should be running{3}" -f $n, $s.Status, $s.StartType, $(if ($isDC -and $n -in 'NTDS','ADWS','Kdc','Netlogon','DNS','DFSR') {' (Active Directory needs it)'} else {''})) }
 }
+if ($isDC) { $sp = Get-Service Spooler; if ($sp -and $sp.Status -eq 'Running') { Flag 'Print Spooler is running on a domain controller (PrintNightmare). Disable it unless the README needs printing.' } }
 foreach ($n in 'wuauserv','W32Time','BITS','CryptSvc','LanmanWorkstation') { $s = Get-Service $n; if ($s -and $s.StartType -eq 'Disabled') { Flag "$n is Disabled (should not be)" } }
 
 Info 'Hidden services (in the registry but invisible to services.msc / Get-Service):'
@@ -568,6 +609,9 @@ $wl = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
 $shell = Get-RegValue $wl 'Shell'; $uinit = Get-RegValue $wl 'Userinit'
 if ($shell -and $shell -notmatch '^(?i)explorer\.exe$') { Flag "Winlogon Shell = '$shell' (should be explorer.exe)" }
 if ($uinit -and $uinit -notmatch '^(?i)C:\\Windows\\system32\\userinit\.exe,?$') { Flag "Winlogon Userinit = '$uinit' (should be C:\Windows\system32\userinit.exe,)" }
+if ((Get-RegValue $wl 'AutoAdminLogon') -eq '1') { Flag "AutoAdminLogon = 1: Windows signs in automatically as '$(Get-RegValue $wl 'DefaultUserName')'" }
+$dpw = Get-RegValue $wl 'DefaultPassword'
+if ($dpw) { Flag "Winlogon DefaultPassword stores a password in plain text: '$dpw' (could also be a forensics answer)" }
 $appinit = Get-RegValue 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Windows' 'AppInit_DLLs'
 if ($appinit) { Flag "AppInit_DLLs = '$appinit'" }
 $notif = Get-RegValue 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' 'Notification Packages'
@@ -644,7 +688,10 @@ foreach ($sh in Get-SmbShare) {
     $acc = Get-SmbShareAccess -Name $sh.Name | ForEach-Object { "$($_.AccountName):$($_.AccessRight)" }
     $line = "{0,-12} {1,-30} {2}" -f $sh.Name, $sh.Path, ($acc -join ', ')
     if ($default) { Info $line } else { Check $line }
-    if (@($acc | Where-Object { $_ -match 'Everyone:Full' }).Count -gt 0) { Flag "Share $($sh.Name) gives Everyone FULL control" }
+    $broadRx = if ($default) { '^(Everyone|BUILTIN\\Guests|.*\\Guest|.*\\Domain Users)$' } else { '^(Everyone|BUILTIN\\Users|BUILTIN\\Guests|NT AUTHORITY\\Authenticated Users|.*\\Guest|.*\\Domain Users)$' }
+    foreach ($a in Get-SmbShareAccess -Name $sh.Name | Where-Object { "$($_.AccessControlType)" -eq 'Allow' -and "$($_.AccessRight)" -in 'Full','Change' -and $_.AccountName -match $broadRx }) {
+        Flag ("Share {0} gives {1} {2} access" -f $sh.Name, $a.AccountName, "$($a.AccessRight)".ToUpper())
+    }
 }
 
 Info 'Executables in places they should not be:'
@@ -693,11 +740,19 @@ Section 'UNWANTED SOFTWARE + PROHIBITED FILES'
 $uninstall = @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*','HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*')
 foreach ($sid in (Get-ChildItem Registry::HKEY_USERS | Where-Object { $_.PSChildName -match '^S-1-5-21-[\d-]+$' }).PSChildName) { $uninstall += "Registry::HKEY_USERS\$sid\Software\Microsoft\Windows\CurrentVersion\Uninstall\*" }
 $apps = Get-ItemProperty $uninstall | Where-Object { $_.DisplayName } | Sort-Object DisplayName -Unique
-$badWords = 'wireshark|nmap|zenmap|\bcain\b|\babel\b|john the|hashcat|mimikatz|netcat|ncat|cryptcat|metasploit|burp|hydra|aircrack|angry ?ip|ophcrack|l0pht|sharphound|bloodhound|rubeus|lazagne|keylog|spy|teamviewer|anydesk|ammyy|vnc|radmin|utorrent|bittorrent|bitcomet|frostwire|limewire|tor browser|steam|epic games|minecraft|roblox|game|solitaire|pong|npcap|winpcap|ccleaner|driver ?booster|advanced ?systemcare|wise care|mcafee webadvisor|ask toolbar|babylon|conduit|cheat ?engine'
+$badWords = 'wireshark|nmap|zenmap|\bcain\b|\babel\b|john the|hashcat|mimikatz|netcat|ncat|cryptcat|metasploit|burp|hydra|aircrack|angry ?ip|ophcrack|l0pht|sharphound|bloodhound|rubeus|lazagne|keylog|spy|teamviewer|anydesk|ammyy|vnc|radmin|utorrent|bittorrent|bitcomet|frostwire|limewire|tor browser|steam|epic games|minecraft|roblox|game|solitaire|pong|npcap|winpcap|ccleaner|driver ?booster|advanced ?systemcare|wise care|mcafee webadvisor|ask toolbar|babylon|conduit|cheat ?engine|shareaza|vuze|deluge|tixati|emule|kazaa|ettercap|kismet|netbus|back ?orifice|darkcomet|njrat|nikto|sqlmap|openvas'
 Info 'Installed programs (name / version / publisher):'
 foreach ($a in $apps) {
     $line = "{0,-55} {1,-18} {2}" -f $a.DisplayName, $a.DisplayVersion, $a.Publisher
     if ($a.DisplayName -match "(?i)$badWords") { Flag $line } else { Info $line }
+}
+Out-Line ''
+Info 'Store apps (these never appear in Control Panel; remove with Get-AppxPackage <name> -AllUsers | Remove-AppxPackage -AllUsers):'
+foreach ($ax in Get-AppxPackage -AllUsers -ErrorAction SilentlyContinue | Where-Object { -not $_.IsFramework -and "$($_.SignatureKind)" -ne 'System' } | Sort-Object Name -Unique) {
+    $line = "{0,-50} {1,-16} {2}" -f $ax.Name, $ax.Version, (($ax.Publisher -split ',')[0] -replace '^CN=')
+    $junk = $ax.Name -match "(?i)$badWords|candy|bubble|king\.com|zynga|roblox|minecraft|asphalt|farm|disney|tiktok|torrent"
+    if ($ax.Publisher -notmatch 'Microsoft') { if ($junk) { Flag "Store app: $line" } else { Check "Store app (not Microsoft): $line" } }
+    elseif ($junk) { Check "Store app from Microsoft (game?): $line" }
 }
 Out-Line ''
 if (-not $Quick) {
@@ -712,6 +767,7 @@ if (-not $Quick) {
     $stack = New-Object System.Collections.Generic.Stack[string]
     [array]::Reverse($roots)   # a stack pops the last item first, so this searches C:\Users first
     foreach ($r in $roots) { if ([IO.Directory]::Exists($r)) { $stack.Push($r) } }
+    $stack.Push('C:\')         # files sitting directly in C:\ (its folders are already in the list)
     $tools = 0; $mediaHits = 0; $scanned = 0
     while ($stack.Count -gt 0) {
         if ($clock.Elapsed -gt $limit) { Check ("File scan stopped after {0} minutes ({1:N0} files checked). Search the rest with Everything (voidtools)." -f [int]$limit.TotalMinutes, $scanned); break }
@@ -726,6 +782,7 @@ if (-not $Quick) {
                     Check ("{0,8:N0} KB  {1}" -f ((New-Object IO.FileInfo $f).Length / 1KB), $f)
                 }
             }
+            if ($dir -eq 'C:\') { continue }
             foreach ($d in [IO.Directory]::EnumerateDirectories($dir)) {
                 if ($skipDirRx.IsMatch($d)) { continue }
                 if (([IO.File]::GetAttributes($d) -band [IO.FileAttributes]::ReparsePoint) -ne 0) { continue }

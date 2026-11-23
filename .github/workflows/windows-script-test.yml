@@ -62,7 +62,8 @@ jobs:
       - name: Users.ps1 dry run, then -Apply -ResetPasswords
         run: |
           Set-ExecutionPolicy -Scope Process Bypass -Force
-          "[admins]`r`n$env:USERNAME (you)`r`npassword: not-a-real-password`r`nmlee`r`n[users]`r`nakim`r`nbwong`r`ncarol" | Set-Content tests\users.txt
+          # README-style headers, pasted as-is (Users.ps1 must understand them)
+          "Authorized Administrators:`r`n$env:USERNAME (you)`r`n`tpassword: not-a-real-password`r`nmlee`r`n`tpassword: also-not-real`r`nAuthorized Users:`r`nakim`r`nbwong`r`ncarol" | Set-Content tests\users.txt
           .\tests\snapshot.ps1 -Out out\snap-pre-users.txt
           .\tests\run-users.ps1 6>&1 | Tee-Object -FilePath out\users-dryrun.txt
           .\tests\snapshot.ps1 -Out out\snap-post-users.txt

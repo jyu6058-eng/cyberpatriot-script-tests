@@ -3,7 +3,9 @@
   Compare the machine's users and admins with the README. Dry run by default.
 
 .DESCRIPTION
-  1. Make a text file (for example users.txt) and paste the README lists in it:
+  1. Make a text file (for example users.txt) and paste the README lists in it.
+     The README's own headers work as-is ("Authorized Administrators:" and
+     "Authorized Users:"), or use [admins] / [users]:
 
         [admins]
         jsmith (you)
@@ -52,8 +54,8 @@ $mode = ''
 foreach ($raw in Get-Content $ListFile) {
     $line = $raw.Trim()
     if (-not $line -or $line.StartsWith('#')) { continue }
-    if ($line -match '^\[(admins?|administrators?)\]$') { $mode = 'admins'; continue }
-    if ($line -match '^\[users?\]$') { $mode = 'users'; continue }
+    if ($line -match '^(\[(admins?|administrators?)\]|authorized\s+admin(istrator)?s?\b.*)$') { $mode = 'admins'; continue }   # also accepts the README's own "Authorized Administrators:" line
+    if ($line -match '^(\[users?\]|authorized\s+users?\b.*)$') { $mode = 'users'; continue }
     if ($line -match '^(?i)password') { continue }
     $name = ($line -replace '\(you\)', '').Trim()
     if (-not $name) { continue }
@@ -109,7 +111,7 @@ if (-not $isDC) {
                 $pw = New-StrongPassword
                 New-LocalUser -Name $n -Password (ConvertTo-SecureString $pw -AsPlainText -Force) | Out-Null
                 net user "$n" /passwordreq:yes | Out-Null   # New-LocalUser leaves 'password not required' set
-                Add-LocalGroupMember -SID 'S-1-5-32-545' -Member $n
+                Add-LocalGroupMember -SID 'S-1-5-32-545' -Member $n -ErrorAction SilentlyContinue   # usually already a member
                 "$n`t$pw" | Out-File $pwFile -Append -Encoding UTF8
                 $created.Add($n)
                 Write-Host '    created' -ForegroundColor Green; $changes++

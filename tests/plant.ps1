@@ -140,6 +140,25 @@ Plant 'ads' {
 }
 Plant 'live-shell' { Start-Process cmd.exe -ArgumentList '/c ping -n 1200 127.0.0.1 > nul' -WindowStyle Hidden }
 
+# ---------- added after the code review
+Plant 'autologon' {
+    $w = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
+    SetReg $w 'AutoAdminLogon' '1' 'String'; SetReg $w 'DefaultUserName' 'mlee' 'String'; SetReg $w 'DefaultPassword' 'Plain!Text1' 'String'
+}
+Plant 'winrm-basic' {
+    SetReg 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WinRM\Service' 'AllowBasic' 1
+    SetReg 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WinRM\Service' 'AllowUnencryptedTraffic' 1
+}
+Plant 'share-users-change' { New-Item -ItemType Directory -Force C:\Data2 | Out-Null; New-SmbShare -Name Data2 -Path C:\Data2 -ChangeAccess 'BUILTIN\Users' | Out-Null }
+Plant 'rdp-nla-policy-off' { SetReg 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services' 'UserAuthentication' 0 }
+Plant 'asr-one-disabled' {
+    $have = @((Get-MpPreference).AttackSurfaceReductionRules_Ids) | Where-Object { $_ }
+    if ($have.Count -gt 0) { throw "image already has $($have.Count) ASR rule(s); the single-rule case cannot be tested" }
+    Add-MpPreference -AttackSurfaceReductionRules_Ids '9e6c4e1f-7d60-472f-ba1a-a39ef669e4b2' -AttackSurfaceReductionRules_Actions Disabled
+}
+Plant 'exclusion-whole-drive' { Add-MpPreference -ExclusionPath 'C:\' }
+Plant 'root-file' { Set-Content 'C:\passwords.txt' 'admin:Summer2024!' }
+
 # ---------- IIS + FTP
 Plant 'iis-weak' {
     Import-Module WebAdministration
