@@ -1,0 +1,111 @@
+name: Windows script test
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    # Windows Server 2022 with Windows PowerShell 5.1, like CyberPatriot images.
+    runs-on: windows-2022
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Environment
+        run: |
+          "PowerShell $($PSVersionTable.PSVersion)  on  $((Get-CimInstance Win32_OperatingSystem).Caption)"
+          whoami
+          Get-LocalUser | Format-Table Name, Enabled, @{n='RID';e={$_.SID.Value.Split('-')[-1]}} -AutoSize
+
+      - name: Install IIS, FTP, DNS and Telnet client (so those code paths run)
+        run: |
+          Install-WindowsFeature Web-Server, Web-Ftp-Server, DNS, Telnet-Client -IncludeManagementTools | Format-Table -AutoSize
+          $global:LASTEXITCODE = 0
+
+      - name: Plant vulnerabilities
+        run: |
+          Set-ExecutionPolicy -Scope Process Bypass -Force
+          .\tests\plant.ps1
+          $global:LASTEXITCODE = 0
+
+      - name: Audit.ps1 before (-Quick)
+        run: |
+          Set-ExecutionPolicy -Scope Process Bypass -Force
+          & .\scripts\Audit.ps1 -Quick 6>&1 | Tee-Object -FilePath out\audit-before.txt | Select-String '^\[!\]'
+          $global:LASTEXITCODE = 0
+
+      - name: Audit.ps1 full file scan (time-limited)
+        timeout-minutes: 20
+        continue-on-error: true
+        run: |
+          Set-ExecutionPolicy -Scope Process Bypass -Force
+          & .\scripts\Audit.ps1 6>&1 | Tee-Object -FilePath out\audit-full.txt | Select-String 'nc\.exe|song\.mp3|notes\.txt|DONE:'
+          $global:LASTEXITCODE = 0
+
+      - name: Harden.ps1 -DryRun must change nothing
+        run: |
+          Set-ExecutionPolicy -Scope Process Bypass -Force
+          .\tests\snapshot.ps1 -Out out\snap-pre-dry.txt
+          & .\scripts\Harden.ps1 -DryRun 6>&1 | Tee-Object -FilePath out\harden-dryrun.txt | Out-Null
+          .\tests\snapshot.ps1 -Out out\snap-post-dry.txt
+          "dry-run lines: $(@(Get-Content out\harden-dryrun.txt | Where-Object { $_ -match 'would' }).Count)"
+          $global:LASTEXITCODE = 0
+
+      - name: Users.ps1 dry run, then -Apply -ResetPasswords
+        run: |
+          Set-ExecutionPolicy -Scope Process Bypass -Force
+          "[admins]`r`n$env:USERNAME (you)`r`npassword: not-a-real-password`r`nmlee`r`n[users]`r`nakim`r`nbwong`r`ncarol" | Set-Content tests\users.txt
+          .\tests\snapshot.ps1 -Out out\snap-pre-users.txt
+          .\tests\run-users.ps1 6>&1 | Tee-Object -FilePath out\users-dryrun.txt
+          .\tests\snapshot.ps1 -Out out\snap-post-users.txt
+          .\tests\run-users.ps1 -Apply 6>&1 | Tee-Object -FilePath out\users-apply.txt
+          $global:LASTEXITCODE = 0
+
+      - name: Harden.ps1
+        run: |
+          Set-ExecutionPolicy -Scope Process Bypass -Force
+          & .\scripts\Harden.ps1 6>&1 | Tee-Object -FilePath out\harden-1.txt
+          $global:LASTEXITCODE = 0
+
+      - name: Harden.ps1 again with -ExploitProtection (should not redo work)
+        run: |
+          Set-ExecutionPolicy -Scope Process Bypass -Force
+          & .\scripts\Harden.ps1 -ExploitProtection -SkipFeatures 6>&1 | Tee-Object -FilePath out\harden-2.txt
+          $global:LASTEXITCODE = 0
+
+      - name: Harden.ps1 domain-controller DNS block, run on this DNS server
+        run: |
+          Set-ExecutionPolicy -Scope Process Bypass -Force
+          .\tests\dns-block.ps1 6>&1 | Tee-Object -FilePath out\dns-block.txt
+          $global:LASTEXITCODE = 0
+
+      - name: Audit.ps1 after (-Quick)
+        run: |
+          Set-ExecutionPolicy -Scope Process Bypass -Force
+          & .\scripts\Audit.ps1 -Quick 6>&1 | Tee-Object -FilePath out\audit-after.txt | Select-String '^\[!\]'
+          $global:LASTEXITCODE = 0
+
+      - name: Verify
+        run: |
+          Set-ExecutionPolicy -Scope Process Bypass -Force
+          .\tests\verify.ps1
+
+      - name: Collect Desktop reports and backups
+        if: always()
+        run: |
+          Copy-Item "$([Environment]::GetFolderPath('Desktop'))\CP-*" out\ -Recurse -Force -ErrorAction SilentlyContinue
+          $global:LASTEXITCODE = 0
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-reports
+          path: out/
