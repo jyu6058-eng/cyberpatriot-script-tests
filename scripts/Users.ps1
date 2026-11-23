@@ -108,6 +108,7 @@ if (-not $isDC) {
             if (Ask "    Create '$n' with a random password (saved to Desktop)?") {
                 $pw = New-StrongPassword
                 New-LocalUser -Name $n -Password (ConvertTo-SecureString $pw -AsPlainText -Force) | Out-Null
+                net user "$n" /passwordreq:yes | Out-Null   # New-LocalUser leaves 'password not required' set
                 Add-LocalGroupMember -SID 'S-1-5-32-545' -Member $n
                 "$n`t$pw" | Out-File $pwFile -Append -Encoding UTF8
                 $created.Add($n)

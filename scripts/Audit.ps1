@@ -701,21 +701,39 @@ foreach ($a in $apps) {
 }
 Out-Line ''
 if (-not $Quick) {
-    Info 'Tool / malware names on disk:'
-    $toolNames = 'nc.exe','nc64.exe','ncat.exe','netcat*','cryptcat*','mimikatz*','procdump*.exe','psexec*.exe','lazagne*','john*.exe','hashcat*','hydra*','nmap.exe','wireshark.exe','sharphound*','rubeus*','keylog*','*.torrent','*crack*','*keygen*'
+    Info 'Hacking tools, media, archives and password-looking files (one fast pass, stops after 6 minutes):'
+    $toolRx    = [regex]'(?i)^(nc|nc64|ncat|nmap|zenmap|wireshark)\.exe$|^(netcat|cryptcat|mimikatz|lazagne|hashcat|hydra|sharphound|rubeus|keylog)|^(procdump|psexec|john).*\.exe$|\.torrent$|crack|keygen'
+    $mediaRx   = [regex]'(?i)\.(mp3|mp4|wav|flac|m4a|aac|ogg|wma|avi|mkv|mov|wmv|flv|webm|m4v|mpg|mpeg)$|\.(zip|7z|rar|tar|gz|iso|kdbx|pcap|pcapng)$|pass.*\.txt$|password|cred.*\.txt$|secret'
+    $noMediaRx = [regex]'(?i)^C:\\(Program Files|Program Files \(x86\)|ProgramData)\\|\\AppData\\Local\\(Microsoft|Packages|Temp)\\|\\WindowsApps\\|\\CP-Audit'
+    $skipDirRx = [regex]'(?i)\\SysinternalsSuite$|\\WinSxS$'
     $roots = @('C:\Users','C:\Program Files','C:\Program Files (x86)','C:\ProgramData') + @(Get-ChildItem C:\ -Directory -Force | Where-Object { $_.Name -notin 'Windows','Users','Program Files','Program Files (x86)','ProgramData','$Recycle.Bin','System Volume Information','Recovery','Boot','PerfLogs','Documents and Settings','$WinREAgent','Config.Msi','MSOCache' } | ForEach-Object { $_.FullName })
-    foreach ($r in $roots) {
-        Get-ChildItem $r -Recurse -File -Force -Include $toolNames -ErrorAction SilentlyContinue | Where-Object { $_.FullName -notmatch '\\SysinternalsSuite\\|\\CP-Audit' } | Select-Object -First 30 | ForEach-Object { Flag $_.FullName }
+    $clock = [Diagnostics.Stopwatch]::StartNew()
+    $limit = [TimeSpan]::FromMinutes(6)
+    $stack = New-Object System.Collections.Generic.Stack[string]
+    [array]::Reverse($roots)   # a stack pops the last item first, so this searches C:\Users first
+    foreach ($r in $roots) { if ([IO.Directory]::Exists($r)) { $stack.Push($r) } }
+    $tools = 0; $mediaHits = 0; $scanned = 0
+    while ($stack.Count -gt 0) {
+        if ($clock.Elapsed -gt $limit) { Check ("File scan stopped after {0} minutes ({1:N0} files checked). Search the rest with Everything (voidtools)." -f [int]$limit.TotalMinutes, $scanned); break }
+        $dir = $stack.Pop()
+        try {
+            foreach ($f in [IO.Directory]::EnumerateFiles($dir)) {
+                $scanned++
+                $name = [IO.Path]::GetFileName($f)
+                if ($tools -lt 40 -and $toolRx.IsMatch($name)) { $tools++; Flag $f }
+                elseif ($mediaHits -lt 80 -and $mediaRx.IsMatch($name) -and -not $noMediaRx.IsMatch($f)) {
+                    $mediaHits++
+                    Check ("{0,8:N0} KB  {1}" -f ((New-Object IO.FileInfo $f).Length / 1KB), $f)
+                }
+            }
+            foreach ($d in [IO.Directory]::EnumerateDirectories($dir)) {
+                if ($skipDirRx.IsMatch($d)) { continue }
+                if (([IO.File]::GetAttributes($d) -band [IO.FileAttributes]::ReparsePoint) -ne 0) { continue }
+                $stack.Push($d)
+            }
+        } catch { }   # access denied or path too long: skip that folder
     }
-    Out-Line ''
-    Info 'Media / archives / password-looking files under C:\Users and non-system folders on C:\ :'
-    $media = '*.mp3','*.mp4','*.wav','*.flac','*.m4a','*.aac','*.ogg','*.wma','*.avi','*.mkv','*.mov','*.wmv','*.flv','*.webm','*.m4v','*.mpg','*.mpeg'
-    $other = '*.zip','*.7z','*.rar','*.tar','*.gz','*.iso','*pass*.txt','*password*','*cred*.txt','*.kdbx','*secret*','*.pcap','*.pcapng'
-    foreach ($r in @('C:\Users') + ($roots | Where-Object { $_ -notmatch 'Program Files|ProgramData|C:\\Users' })) {
-        Get-ChildItem $r -Recurse -File -Force -Include ($media + $other) -ErrorAction SilentlyContinue |
-            Where-Object { $_.FullName -notmatch '\\AppData\\Local\\(Microsoft|Packages|Temp\\.*\.(zip|gz))\\|\\AppData\\Local\\Microsoft\\|\\WindowsApps\\|\\CP-Audit' } |
-            Select-Object -First 80 | ForEach-Object { Check ("{0,8:N0} KB  {1}" -f ($_.Length / 1KB), $_.FullName) }
-    }
+    Info ("    checked {0:N0} files in {1:N0} seconds" -f $scanned, $clock.Elapsed.TotalSeconds)
 } else { Info 'Skipped the tool-name and media file searches (-Quick)' }
 
 $webRoots = 'C:\inetpub','C:\xampp\htdocs','C:\wamp64\www','C:\nginx\html','C:\Apache24\htdocs'

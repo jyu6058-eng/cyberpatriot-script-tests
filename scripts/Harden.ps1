@@ -277,7 +277,7 @@ Run "enable $($asr.Count) Attack Surface Reduction rules in Block mode" {
 Run 'start the Defender service if stopped' { if ((Get-Service WinDefend).Status -ne 'Running') { Start-Service WinDefend -ErrorAction Stop } }
 $ex = Get-MpPreference
 if ($ex.ExclusionPath -or $ex.ExclusionProcess -or $ex.ExclusionExtension) {
-    Say "  Defender exclusions NOT removed automatically - review them: $(@($ex.ExclusionPath) + @($ex.ExclusionProcess) + @($ex.ExclusionExtension) -join '; ')" 'Yellow'
+    Say "  Defender exclusions NOT removed automatically - review them: $((@($ex.ExclusionPath) + @($ex.ExclusionProcess) + @($ex.ExclusionExtension) | Where-Object { $_ }) -join '; ')" 'Yellow'
     Say '  Remove one with: Remove-MpPreference -ExclusionPath "C:\path"' 'Yellow'
 }
 
