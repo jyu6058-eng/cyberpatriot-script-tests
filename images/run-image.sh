@@ -58,7 +58,12 @@ if [ $ok = 0 ]; then
 fi
 got=$(stat -c %s archive)
 log "downloaded $got bytes in $(( $(date +%s) - t0 ))s"
-[ -n "${EXPECT_SIZE:-}" ] && [ "$got" != "$EXPECT_SIZE" ] && die "size mismatch: got $got, expected $EXPECT_SIZE"
+if [ -n "${EXPECT_SIZE:-}" ] && [ "$got" != "$EXPECT_SIZE" ]; then
+    if [ "$got" -lt 1000000 ] && grep -qiE 'quota|too many users|<html' archive 2>/dev/null; then
+        die "Google Drive refused the download (too many downloads of this file recently). Try again in a few hours."
+    fi
+    die "size mismatch: got $got, expected $EXPECT_SIZE"
+fi
 
 if [ -n "${EXTRA_SCORING_ID:-}" ]; then
     curl -sSL --retry 5 -o "$W/scoring.dat" "$(url "$EXTRA_SCORING_ID")" && log "extra scoring.dat: $(stat -c %s "$W/scoring.dat") bytes"
