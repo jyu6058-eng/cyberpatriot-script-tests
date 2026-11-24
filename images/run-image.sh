@@ -125,8 +125,11 @@ mount_win() {   # $1 partition, $2 ro|rw
     if [ "$(sudo blkid -o value -s TYPE "$p" 2>/dev/null)" = BitLocker ]; then
         sudo mkdir -p /mnt/bl
         local ro=""; [ "$mode" = ro ] && ro="-r"
-        if ! sudo dislocker -V "$p" --clearkey $ro -- /mnt/bl 2>>"$OUT/host.log"; then
-            log "BitLocker on $p has no clear key (locked with TPM/password) - cannot open it. Protectors:"
+        if ! sudo dislocker -v -v -v -l "$OUT/dislocker.log" -V "$p" --clearkey $ro -- /mnt/bl >>"$OUT/host.log" 2>&1; then
+            log "dislocker could not open BitLocker on $p ($mode). First bytes of the partition and dislocker's reasons:"
+            sudo dd if="$p" bs=16 count=1 status=none | od -c | head -2 | tee -a "$OUT/host.log"
+            grep -E '\[(CRITICAL|ERROR|WARNING)\]' "$OUT/dislocker.log" 2>/dev/null | tail -8 | tee -a "$OUT/host.log"
+            log "Key protectors on the volume (a clear key is needed):"
             sudo dislocker-metadata -V "$p" 2>&1 | grep -iE 'datum value type|protect|entry type' | sort | uniq -c | head -20 | tee -a "$OUT/host.log"
             return 1
         fi
@@ -139,17 +142,30 @@ mount_win() {   # $1 partition, $2 ro|rw
     sudo mount -t ntfs-3g -o rw,remove_hiberfile "$src" /mnt/w
 }
 # The dislocker FUSE mount belongs to root, so check and unmount it as root (a plain `mountpoint` cannot see it).
-umount_win() { sudo umount /mnt/w 2>/dev/null; sudo umount /mnt/bl 2>/dev/null; sleep 1; true; }
-BITLOCKER=0
+# Wait for the FUSE daemons (ntfs-3g, dislocker) to exit too, so the next open starts from a clean state.
+umount_win() {
+    sudo umount /mnt/w 2>/dev/null
+    for _ in $(seq 20); do pgrep -x '(mount\.)?ntfs-3g' >/dev/null || break; sleep 1; done
+    sudo umount /mnt/bl 2>/dev/null
+    for _ in $(seq 20); do pgrep -x 'dislocker(-fuse)?' >/dev/null || break; sleep 1; done
+    if sudo mountpoint -q /mnt/bl || pgrep -x 'dislocker(-fuse)?' >/dev/null; then log "warning: dislocker still running after unmount: $(pgrep -a dislocker | head -2 | tr "\n" " ")"; fi
+    true
+}
+BITLOCKER=0; KEEP_RW=0
 WINPART=""; WINDISK=""
 for j in $(seq 0 $((NDISK-1))); do
     nbd_up "$j" "$W/disk$j.qcow2"
     lsblk -o NAME,SIZE,FSTYPE,LABEL "/dev/nbd$j" | tee -a "$OUT/host.log"
     for p in /dev/nbd${j}p*; do
-        case "$(sudo blkid -o value -s TYPE "$p" 2>/dev/null)" in ntfs|BitLocker) ;; *) continue;; esac
-        mount_win "$p" ro || continue
+        ptype=$(sudo blkid -o value -s TYPE "$p" 2>/dev/null)
+        case "$ptype" in ntfs|BitLocker) ;; *) continue;; esac
+        # dislocker failed twice to reopen Troy's BitLocker volume right after a read-only pass
+        # ("Cannot parse volume header"), while the first open always worked. So a BitLocker volume is
+        # opened once, read-write, and kept mounted for the injection below.
+        if [ "$ptype" = BitLocker ]; then mount_win "$p" rw || continue; else mount_win "$p" ro || continue; fi
         if [ -n "$(sudo find /mnt/w -maxdepth 4 -ipath '/mnt/w/windows/system32/config/system' -print -quit 2>/dev/null)" ]; then
             WINPART=$p; WINDISK=$j
+            [ "$ptype" = BitLocker ] && { KEEP_RW=1; break; }
         fi
         umount_win
         [ -n "$WINPART" ] && break
@@ -159,7 +175,7 @@ done
 [ -n "$WINPART" ] || { nbd_down; die "no Windows partition found"; }
 WINPNUM=${WINPART##*p}
 log "Windows is on disk$WINDISK partition $WINPNUM$( [ $BITLOCKER = 1 ] && echo ' (BitLocker, clear key)')"
-mount_win "$WINPART" rw || { nbd_down; die "cannot mount Windows read-write"; }
+if [ "${KEEP_RW:-0}" != 1 ]; then mount_win "$WINPART" rw || { nbd_down; die "cannot mount Windows read-write"; }; fi
 extra=(); [ -s "$W/scoring.dat" ] && extra=(--scoring-dat "$W/scoring.dat")
 sudo "$PY" "$REPO/images/inject.py" /mnt/w "$OUT" "$REPO" "${extra[@]}" 2>&1 | tee -a "$OUT/host.log"
 rc=${PIPESTATUS[0]}
@@ -227,7 +243,11 @@ cat "$OUT/qemu.log" >> "$OUT/host.log"
 
 # ------------------------------------------------------------ collect
 nbd_up "$WINDISK" "$W/disk$WINDISK.qcow2" -r
-mount_win "/dev/nbd${WINDISK}p$WINPNUM" ro || log "could not mount Windows to collect results"
+if ! mount_win "/dev/nbd${WINDISK}p$WINPNUM" ro; then
+    log "first mount for collecting failed; reconnecting the disk and trying once more"
+    umount_win; nbd_down; sleep 3; nbd_up "$WINDISK" "$W/disk$WINDISK.qcow2" -r
+    mount_win "/dev/nbd${WINDISK}p$WINPNUM" ro || log "could not mount Windows to collect results"
+fi
 if mountpoint -q /mnt/w; then
     sudo "$PY" "$REPO/images/collect.py" /mnt/w "$OUT" 2>&1 | tee -a "$OUT/host.log"
 fi
