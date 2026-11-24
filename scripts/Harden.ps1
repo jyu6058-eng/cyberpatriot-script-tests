@@ -306,10 +306,16 @@ Set-Reg 'HKCU:\SOFTWARE\Policies\Microsoft\Windows\Installer' 'AlwaysInstallElev
 # ------------------------------------------------------------------ 5. firewall
 Step 'Windows Firewall (turn on; no ports are blocked)'
 # Planted trick (Beyond Journey's End): MpsSvc made to depend on a service that never starts (Sense), so the
-# firewall cannot start. Windows' own dependencies are mpsdrv and bfe.
-$dep = @((Get-Item 'HKLM:\SYSTEM\CurrentControlSet\Services\MpsSvc' -ErrorAction SilentlyContinue).GetValue('DependOnService', $null)) | Where-Object { $_ }
-if ($dep.Count -and @($dep | Where-Object { $_ -notin 'mpsdrv', 'bfe' }).Count) {
-    Run "MpsSvc dependencies $($dep -join ', ') -> mpsdrv, bfe (Windows default)" { sc.exe config MpsSvc depend= mpsdrv/bfe | Out-Null; if ($LASTEXITCODE -ne 0) { throw "sc config exit $LASTEXITCODE" } }
+# firewall cannot start. Windows' own dependencies are mpsdrv, bfe and (Server 2022) nsi. sc.exe config is
+# denied for this protected service even to admins, so fix the registry value; the change applies after a reboot.
+$mpsKey = 'HKLM:\SYSTEM\CurrentControlSet\Services\MpsSvc'
+$dep = @((Get-Item $mpsKey -ErrorAction SilentlyContinue).GetValue('DependOnService', $null)) | Where-Object { $_ }
+$extra = @($dep | Where-Object { $_ -notin 'mpsdrv', 'bfe', 'nsi' })
+if ($extra.Count) {
+    $keep = @($dep | Where-Object { $_ -in 'mpsdrv', 'bfe', 'nsi' }); foreach ($need in 'mpsdrv', 'bfe') { if ($keep -notcontains $need) { $keep += $need } }
+    Run "MpsSvc dependencies: removed $($extra -join ', ') (planted), kept $($keep -join ', ') - REBOOT, then the firewall can start" {
+        Set-ItemProperty -LiteralPath $mpsKey -Name DependOnService -Value ([string[]]$keep) -Type MultiString -ErrorAction Stop
+    }
 }
 foreach ($fs in 'BFE','MpsSvc') {
     $svc = Get-Service $fs -ErrorAction SilentlyContinue

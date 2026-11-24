@@ -428,7 +428,7 @@ Section 'DEFENSIVE COUNTERMEASURES (firewall, Defender, SMB, RDP)'
 $mps = Get-Service MpsSvc
 if ($mps -and $mps.Status -ne 'Running') { Flag "The firewall service (MpsSvc) is $($mps.Status) / $($mps.StartType) - the firewall is not filtering anything, whatever the profiles say" }
 $mpsDep = @((Get-Item 'HKLM:\SYSTEM\CurrentControlSet\Services\MpsSvc').GetValue('DependOnService', $null)) | Where-Object { $_ }
-if (@($mpsDep | Where-Object { $_ -notin 'mpsdrv', 'bfe' }).Count) { Flag "MpsSvc depends on $($mpsDep -join ', ') (Windows default: mpsdrv, bfe). A planted dependency that never starts keeps the firewall off: sc.exe config MpsSvc depend= mpsdrv/bfe" }
+if (@($mpsDep | Where-Object { $_ -notin 'mpsdrv', 'bfe', 'nsi' }).Count) { Flag "MpsSvc depends on $($mpsDep -join ', ') (Windows uses mpsdrv, bfe, nsi). A planted dependency that never starts keeps the firewall off. Fix HKLM\SYSTEM\CurrentControlSet\Services\MpsSvc\DependOnService in regedit (sc.exe config is denied for this service), then reboot." }
 foreach ($p in Get-NetFirewallProfile) {
     if ($p.Enabled -eq 'True' -or $p.Enabled -eq $true) { Good "Firewall $($p.Name) profile enabled (inbound default: $($p.DefaultInboundAction))" } else { Flag "Firewall $($p.Name) profile is OFF" }
     if ([string]$p.DefaultInboundAction -eq 'Allow') { Flag "Firewall $($p.Name) profile ALLOWS inbound connections that match no rule (should be Block)" }

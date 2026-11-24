@@ -192,6 +192,8 @@ if (Planted 'defender-ignore-severe') {
     Rec 'Harden.ps1' 'Ignore-severe-threats policy removed' ($null -eq (RegVal 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Threats\ThreatSeverityDefaultAction' '5'))
     Rec 'Harden.ps1' 'High threat default action no longer Allow' ((Get-MpPreference).HighThreatDefaultAction -notin 6, 9) "is $((Get-MpPreference).HighThreatDefaultAction)"
 }
+if (Planted 'mpssvc-depends-sense') { Rec 'Harden.ps1' 'Planted MpsSvc dependency removed, Windows ones kept' ((@((Get-Item 'HKLM:\SYSTEM\CurrentControlSet\Services\MpsSvc').GetValue('DependOnService')) -notcontains 'Sense') -and (@((Get-Item 'HKLM:\SYSTEM\CurrentControlSet\Services\MpsSvc').GetValue('DependOnService')) -contains 'mpsdrv')) }
+Rec 'No false positive' 'Clean MpsSvc dependencies (mpsdrv, bfe, nsi) not flagged' ((Planted 'mpssvc-depends-sense') -or -not (Has $before 'MpsSvc depends on'))
 if (Planted 'defender-script-scan-policy') { Rec 'Harden.ps1' 'DisableScriptScanning policy removed' ($null -eq (RegVal 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection' 'DisableScriptScanning')) }
 if (Planted 'rdp-on') { Rec 'Harden.ps1' 'RDP requires secure RPC' ((RegVal 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services' 'fEncryptRPCTraffic') -eq 1) }
 if (Planted 'rdp-nla-policy-off') { Rec 'Harden.ps1' 'RDP NLA policy back on' ((RegVal 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services' 'UserAuthentication') -eq 1) }
