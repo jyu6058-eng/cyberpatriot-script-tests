@@ -1,0 +1,31 @@
+name: Image runner probe
+
+on:
+  push:
+    branches: [image-test]
+    paths: ['.github/workflows/image-probe.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Hardware
+        run: |
+          nproc; free -g; df -h / /mnt
+          grep -cE 'vmx|svm' /proc/cpuinfo || true
+          ls -la /dev/kvm || echo "NO /dev/kvm"
+          lsb_release -a; uname -r
+      - name: Drive download check (first 200 MB of each image)
+        run: |
+          for id in 1PRe5T9WXljVBh2e9CBqCpzObezsBb-HH 1zIJsxN4fqYn-W4-8u-O6UZeOlGc3sXD9 1RqOvBrkJjmhIVPqIv1YQ355WzQZNEKas 1jz8YMa7VOimnV9ErbkWOmHtBavlBwOqc; do
+            echo "== $id"
+            curl -sSL -r 0-209715199 -o part.bin -w 'http=%{http_code} bytes=%{size_download} speed=%{speed_download}B/s type=%{content_type}\n' \
+              "https://drive.usercontent.google.com/download?id=$id&export=download&confirm=t" || true
+            file part.bin; head -c 300 part.bin | strings | head -3
+            rm -f part.bin
+          done
