@@ -210,6 +210,14 @@ Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Services\Netlogon\Parameters' 'RequireSt
 Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Services\LDAP' 'LDAPClientIntegrity' 1
 Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Control\Print\Providers\LanMan Print Services\Servers' 'AddPrinterDrivers' 1
 Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management' 'ClearPageFileAtShutdown' 1
+Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\kernel' 'DisableExceptionChainValidation' 0   # SEHOP (CIS MSS)
+Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\kernel' 'ObCaseInsensitive' 1
+Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager' 'ProtectionMode' 1
+Set-Reg $LS 'autodisconnect' 15                # SMB server idle session timeout (minutes)
+$psShellKey = 'Registry::HKEY_CLASSES_ROOT\Microsoft.PowerShellScript.1\Shell'
+if ((Get-Item -LiteralPath $psShellKey -ErrorAction SilentlyContinue).GetValue('') -eq '0') {
+    Run '.ps1 double-click opens Notepad again instead of running the script' { Set-ItemProperty -LiteralPath $psShellKey -Name '(default)' -Value 'Open' -ErrorAction Stop }
+}
 Set-Reg 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' 'AllocateCDRoms' '1' 'String'   # CD-ROM access for the local user only
 # UAC + logon screen
 Set-Reg $SY 'EnableLUA' 1
@@ -253,7 +261,17 @@ Step 'Microsoft Defender'
 $dp = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender'
 Remove-RegValue $dp 'DisableAntiSpyware'
 Remove-RegValue $dp 'DisableAntiVirus'
-foreach ($n in 'DisableRealtimeMonitoring','DisableBehaviorMonitoring','DisableOnAccessProtection','DisableScanOnRealtimeEnable','DisableIOAVProtection') { Remove-RegValue "$dp\Real-Time Protection" $n }
+foreach ($n in 'DisableRealtimeMonitoring','DisableBehaviorMonitoring','DisableOnAccessProtection','DisableScanOnRealtimeEnable','DisableIOAVProtection','DisableScriptScanning') { Remove-RegValue "$dp\Real-Time Protection" $n }
+# Policy that makes Defender ignore (6) or take no action (9) on threats of a given alert level
+$tsda = Get-Item -LiteralPath "$dp\Threats\ThreatSeverityDefaultAction" -ErrorAction SilentlyContinue
+if ($tsda) { foreach ($lvl in $tsda.GetValueNames()) { if ([string]$tsda.GetValue($lvl) -in '6','9') { Remove-RegValue "$dp\Threats\ThreatSeverityDefaultAction" $lvl } } }
+$mpp = Get-MpPreference -ErrorAction SilentlyContinue
+foreach ($lv in 'Severe','High','Moderate','Low') {
+    if ($mpp -and $mpp."${lv}ThreatDefaultAction" -in 6, 9) {
+        $splat = @{ "${lv}ThreatDefaultAction" = 'Quarantine'; ErrorAction = 'Stop' }
+        Run "Defender default action for $lv threats -> Quarantine (was $($mpp."${lv}ThreatDefaultAction"))" { Set-MpPreference @splat }
+    }
+}
 Run 'turn on real-time, behavior, download and script scanning + PUA blocking' {
     Set-MpPreference -DisableRealtimeMonitoring $false -DisableBehaviorMonitoring $false -DisableIOAVProtection $false -DisableScriptScanning $false -PUAProtection Enabled -ErrorAction Stop
 }

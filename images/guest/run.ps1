@@ -1,10 +1,10 @@
-# Guest side of the practice-image test. Started as SYSTEM at boot by a
-# one-shot service that inject.py adds offline; that service is deleted first
-# thing so the audit never sees it.
+# Guest side of the practice-image test. Started as SYSTEM at every boot by a
+# service that inject.py adds offline (CPTestRunner). It is a step machine:
+# C:\cptest\state.txt holds the next step, so the run resumes after the
+# planned reboot and after crashes (some images blue-screen on a timer).
+# The hook is removed in the last step. Audit will list CPTestRunner while the
+# test runs; that one entry is ours.
 #
-# Phase 1: wait for boot -> score snapshot -> Audit (full) -> Users dry run
-#          -> score snapshot -> Harden -> wait -> score snapshot -> reboot
-# Phase 2: wait for boot -> score snapshot -> Audit -Quick -> power off
 # Progress goes to C:\cptest\out\run.log and to COM1 (the host shows it live).
 
 $ErrorActionPreference = 'Continue'
@@ -22,16 +22,15 @@ function Log([string]$m) {
     if ($port) { try { $port.WriteLine($l) } catch {} }
 }
 
-$phase = if (Test-Path $state) { (Get-Content $state -Raw).Trim() } else { 'phase1' }
-Log "=== $phase start as $([Security.Principal.WindowsIdentity]::GetCurrent().Name) on $env:COMPUTERNAME (COM1 $(if ($port) {'ok'} else {'missing'}))"
-
-# Remove the boot hook before anything looks at services.
-& sc.exe delete CPTestRunner | Out-Null
-Start-Sleep 2
-Log "boot hook removed: $(if (Get-Service CPTestRunner -ErrorAction SilentlyContinue) { 'NO - still present' } else { 'yes' })"
-
 $os = Get-CimInstance Win32_OperatingSystem
-Log "OS: $($os.Caption) build $($os.BuildNumber), ProductType $($os.ProductType), booted $($os.LastBootUpTime)"
+Log "=== boot at $($os.LastBootUpTime) | $($os.Caption) build $($os.BuildNumber) type $($os.ProductType) | as $([Security.Principal.WindowsIdentity]::GetCurrent().Name) | COM1 $(if ($port) {'ok'} else {'missing'})"
+$bugcheck = Get-WinEvent -FilterHashtable @{ LogName = 'System'; Id = 1001; ProviderName = 'Microsoft-Windows-WER-SystemErrorReporting' } -MaxEvents 3 -ErrorAction SilentlyContinue
+foreach ($b in $bugcheck) { Log "  earlier BLUE SCREEN: $($b.TimeCreated) $($b.Message -replace '\s+', ' ' | Select-Object -First 1)" }
+
+$sysDesk = [Environment]::GetFolderPath('Desktop')
+New-Item -ItemType Directory -Path $sysDesk -Force | Out-Null
+$empty = Join-Path $base 'empty.txt'
+if (-not (Test-Path $empty)) { Set-Content -Path $empty -Value '' }
 
 function Wait-Ready {
     $t0 = Get-Date
@@ -43,14 +42,8 @@ function Wait-Ready {
         } until ($ok -or ((Get-Date) - $t0).TotalMinutes -gt 15)
         Log "Active Directory ready: $ok after $([int]((Get-Date) - $t0).TotalSeconds)s"
     }
-    # let the scoring engine finish a pass after boot
-    Start-Sleep 240
+    Start-Sleep 240      # let the scoring engine finish a pass after boot
 }
-
-$sysDesk = [Environment]::GetFolderPath('Desktop')
-New-Item -ItemType Directory -Path $sysDesk -Force | Out-Null
-$empty = Join-Path $base 'empty.txt'
-if (-not (Test-Path $empty)) { Set-Content -Path $empty -Value '' }
 
 function Get-ScoreCandidates {
     $c = New-Object System.Collections.Generic.List[string]
@@ -74,8 +67,8 @@ function Snap([string]$tag) {
             Copy-Item -LiteralPath $f -Destination (Join-Path $dir ('{0:00}_{1}' -f $i, (Split-Path $f -Leaf))) -Force
             if ($f -match '\.html?$') {
                 $t = [regex]::Replace((Get-Content -LiteralPath $f -Raw), '<[^>]+>', "`n")
-                $lines = $t -split "`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -match '(?i)points|out of|penalt|score|issues' } | Select-Object -First 4
-                foreach ($l in $lines) { Log "  [$tag] $l" }
+                $t -split "`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -match '(?i)points|out of|penalt|issues' } |
+                    Select-Object -First 4 | ForEach-Object { Log "  [$tag] $_" }
             }
         }
     }
@@ -98,10 +91,13 @@ function Run-Script([string]$tag, [string]$script, [string]$scriptArgs, [int]$mi
         Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
     }
     Log ('{0} finished in {1:n1} min, exit code {2}' -f $tag, ((Get-Date) - $t0).TotalMinutes, $p.ExitCode)
-    $err = Get-Content "$out\$tag.err.txt" -ErrorAction SilentlyContinue | Where-Object { $_ -match '\S' } | Select-Object -First 3
-    foreach ($e in $err) { Log "  stderr: $e" }
-    $done = Select-String -Path "$out\$tag.console.txt" -Pattern 'DONE:|findings|Finished|errors?' -ErrorAction SilentlyContinue | Select-Object -Last 2
-    foreach ($d in $done) { Log "  $($d.Line.Trim())" }
+    Get-Content "$out\$tag.err.txt" -ErrorAction SilentlyContinue | Where-Object { $_ -match '\S' } | Select-Object -First 3 | ForEach-Object { Log "  stderr: $_" }
+    Select-String -Path "$out\$tag.console.txt" -Pattern 'DONE:|README:' -ErrorAction SilentlyContinue | Select-Object -Last 2 | ForEach-Object { Log "  $($_.Line.Trim())" }
+}
+
+function Save-Audit([string]$name) {
+    $r = Get-ChildItem $sysDesk -Filter 'CP-Audit-*.txt' | Sort-Object LastWriteTime | Select-Object -Last 1
+    if ($r) { Move-Item $r.FullName "$out\$name.txt" -Force; Log "saved $name.txt" }
 }
 
 function Save-Services([string]$tag) {
@@ -109,46 +105,36 @@ function Save-Services([string]$tag) {
         Format-Table -AutoSize | Out-String -Width 200 | Set-Content "$out\services-$tag.txt"
 }
 
-if ($phase -eq 'phase1') {
-    Wait-Ready
-    Save-Services 'boot'
-    Snap 'boot'
+$steps = @(
+    @{ n = 'snap-boot';     a = { Save-Services 'boot'; Snap 'boot' } }
+    @{ n = 'audit-before';  a = { Run-Script 'audit-before' 'Audit.ps1' '' 35; Save-Audit 'audit-before' } }
+    @{ n = 'users-dryrun';  a = { if (Test-Path "$base\users.txt") { Run-Script 'users-dryrun' 'Users.ps1' "-ListFile '$base\users.txt'" 10 } else { Log 'no README user list - Users.ps1 dry run skipped' } } }
+    @{ n = 'snap-audit';    a = { Start-Sleep 90; Snap 'after-audit' } }        # Audit is read-only; score must not move
+    @{ n = 'harden';        a = { Run-Script 'harden' 'Harden.ps1' '' 30; Save-Services 'after-harden' } }
+    @{ n = 'snap-harden';   a = { Start-Sleep 300; Snap 'after-harden' } }
+    @{ n = 'reboot';        a = { Log 'rebooting (Harden asks for a reboot)'; $script:rebooting = $true } }
+    @{ n = 'snap-reboot';   a = { Save-Services 'after-reboot'; Snap 'after-reboot' } }
+    @{ n = 'audit-after';   a = { Run-Script 'audit-after' 'Audit.ps1' '-Quick' 25; Save-Audit 'audit-after' } }
+    @{ n = 'finish';        a = { Snap 'final'; & sc.exe delete CPTestRunner | Out-Null; Log "boot hook removed: $(-not (Get-Service CPTestRunner -ErrorAction SilentlyContinue))"; $script:finished = $true } }
+)
 
-    Run-Script 'audit-before' 'Audit.ps1' '' 35
-    $r = Get-ChildItem $sysDesk -Filter 'CP-Audit-*.txt' | Sort-Object LastWriteTime | Select-Object -Last 1
-    if ($r) { Move-Item $r.FullName "$out\audit-before.txt" -Force }
+# state: "<next step index> <attempts at that step>"
+$idx = 0; $tries = 0
+if (Test-Path $state) { $p = (Get-Content $state -Raw).Trim() -split '\s+'; $idx = [int]$p[0]; $tries = [int]$p[1] }
+if ($idx -ge $steps.Count) { Log 'state says finished; removing hook'; & sc.exe delete CPTestRunner | Out-Null; Stop-Computer -Force; exit }
+if ($tries -ge 2) { Log "step $($steps[$idx].n) was interrupted twice - skipping it"; $idx++; $tries = 0 }
+if ($idx -gt 0 -and $tries -gt 0) { Log "resuming: step $($steps[$idx].n) was interrupted (crash or reboot), retrying" }
 
-    if (Test-Path "$base\users.txt") {
-        Run-Script 'users-dryrun' 'Users.ps1' "-ListFile '$base\users.txt'" 10
-    } else { Log 'no README user list found - Users.ps1 dry run skipped' }
-
-    Start-Sleep 90
-    Snap 'after-audit'          # Audit is read-only: the score must not change here
-
-    Run-Script 'harden' 'Harden.ps1' '' 30
-    Get-ChildItem $sysDesk -Directory -Filter 'CP-Backup-*' | ForEach-Object { Log "Harden backup: $($_.FullName) ($(@(Get-ChildItem $_.FullName -Recurse -File).Count) files)" }
-    Save-Services 'after-harden'
-    Start-Sleep 300
-    Snap 'after-harden'
-
-    # Come back after the reboot.
-    Set-Content -Path $state -Value 'phase2'
-    $ip = (Get-Content "$base\imagepath.txt" -Raw).Trim()
-    New-Service -Name CPTestRunner -BinaryPathName $ip -StartupType Automatic -DisplayName 'CP test runner (one-shot)' | Out-Null
-    Log 'rebooting (Harden asks for a reboot)'
-    Restart-Computer -Force
-    exit
+Wait-Ready
+$script:rebooting = $false; $script:finished = $false
+while ($idx -lt $steps.Count) {
+    $s = $steps[$idx]
+    Set-Content -Path $state -Value "$idx $($tries + 1)"
+    Log "--- step $($idx + 1)/$($steps.Count): $($s.n)"
+    & $s.a
+    $idx++; $tries = 0
+    Set-Content -Path $state -Value "$idx 0"
+    if ($script:rebooting) { Restart-Computer -Force; exit }
 }
-
-if ($phase -eq 'phase2') {
-    Wait-Ready
-    Save-Services 'after-reboot'
-    Snap 'after-reboot'
-    Run-Script 'audit-after' 'Audit.ps1' '-Quick' 25
-    $r = Get-ChildItem $sysDesk -Filter 'CP-Audit-*.txt' | Sort-Object LastWriteTime | Select-Object -Last 1
-    if ($r) { Move-Item $r.FullName "$out\audit-after.txt" -Force }
-    Snap 'final'
-    Set-Content -Path $state -Value 'done'
-    Log 'ALL DONE - powering off'
-    Stop-Computer -Force
-}
+Log 'ALL DONE - powering off'
+Stop-Computer -Force

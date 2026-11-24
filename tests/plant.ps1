@@ -158,6 +158,40 @@ Plant 'asr-one-disabled' {
 }
 Plant 'exclusion-whole-drive' { Add-MpPreference -ExclusionPath 'C:\' }
 Plant 'root-file' { Set-Content 'C:\passwords.txt' 'admin:Summer2024!' }
+# ---------- found on the Troy Windows 10 Mock answer key
+Plant 'svc-swapped' {
+    New-Item -ItemType Directory -Force 'C:\Windows\Globalization\Sorting' | Out-Null
+    Set-Content 'C:\Windows\Globalization\Sorting\Medic Service.exe' 'not a real exe'
+    sc.exe create fakemedic binPath= '"C:\Windows\Globalization\Sorting\Medic Service.exe"' start= demand | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "sc create exit $LASTEXITCODE" }
+    SetReg 'HKLM:\SYSTEM\CurrentControlSet\Services\fakemedic\Parameters' 'ServiceDll' '%SystemRoot%\System32\WaaSMedicSvc.dll' 'ExpandString'
+}
+Plant 'cpl-evil' { SetReg 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Control Panel\Cpls' 'evil' 'C:\Users\Public\evil.cpl' 'String' }
+Plant 'ps1-doubleclick-run' { Set-ItemProperty -LiteralPath 'Registry::HKEY_CLASSES_ROOT\Microsoft.PowerShellScript.1\Shell' -Name '(default)' -Value '0' -ErrorAction Stop }
+Plant 'sehop-off' { SetReg 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\kernel' 'DisableExceptionChainValidation' 1 }
+Plant 'smb-autodisconnect' { SetReg 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters' 'autodisconnect' 120 }
+Plant 'null-session-fallback' { SetReg 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa\MSV1_0' 'allownullsessionfallback' 1 }
+Plant 'boot-testsigning' { bcdedit /set '{current}' testsigning on | Out-Null; if ($LASTEXITCODE -ne 0) { throw "bcdedit exit $LASTEXITCODE (Secure Boot?)" } }
+# ---------- found on the PPTH practice image answer key
+Plant 'defender-ignore-severe' {
+    SetReg 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Threats' 'Threats_ThreatSeverityDefaultAction' 1
+    SetReg 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Threats\ThreatSeverityDefaultAction' '5' '6' 'String'
+    Set-MpPreference -HighThreatDefaultAction Allow -ErrorAction Stop
+}
+Plant 'defender-script-scan-policy' { SetReg 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection' 'DisableScriptScanning' 1 }
+Plant 'driver-mimidrv' {
+    Set-Content 'C:\Users\Public\mimidrv.sys' 'not a real driver'
+    sc.exe create mimidrv type= kernel start= demand binPath= 'C:\Users\Public\mimidrv.sys' | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "sc create exit $LASTEXITCODE" }
+}
+Plant 'rdp-on' { SetReg 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server' 'fDenyTSConnections' 0 }
+Plant 'firefox-autoconfig' {
+    $ff = 'C:\Program Files\Mozilla Firefox'
+    if (-not (Test-Path "$ff\firefox.exe")) { throw 'Firefox not installed on this runner' }
+    New-Item -ItemType Directory -Force "$ff\defaults\pref" | Out-Null
+    Set-Content "$ff\defaults\pref\autoconfig.js" "pref(`"general.config.filename`", `"mozilla.cfg`");`npref(`"general.config.obscure_value`", 0);"
+    Set-Content "$ff\mozilla.cfg" "// first line is skipped`nlockPref(`"browser.safebrowsing.malware.enabled`", false);"
+}
 
 # ---------- IIS + FTP
 Plant 'iis-weak' {

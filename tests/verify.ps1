@@ -80,6 +80,20 @@ $detect = @(
     ,@('rdp-nla-policy-off','RDP NLA turned off by policy','Group Policy turns OFF RDP Network Level Authentication',$true,'b')
     ,@('asr-one-disabled','Single disabled ASR rule shown by full ID','ASR rule 9e6c4e1f-7d60-472f-ba1a-a39ef669e4b2 is set to Disabled',$true,'b')
     ,@('exclusion-whole-drive','Whole-drive Defender exclusion','Defender excludes the whole C:\\ drive',$false,'b')
+    ,@('svc-swapped','Built-in service swapped for an exe','Service fakemedic has a ServiceDll',$false,'b')
+    ,@('svc-swapped','Service exe in an odd Windows folder','Service fakemedic runs from an unusual Windows folder',$false,'b')
+    ,@('cpl-evil','Control Panel CPL persistence','CPL item evil = C:\\Users\\Public\\evil\.cpl',$false,'b')
+    ,@('ps1-doubleclick-run','.ps1 double-click runs the script','Double-clicking a \.ps1 file RUNS it',$true,'b')
+    ,@('sehop-off','SEHOP disabled','SEHOP on .*= 1',$true,'b')
+    ,@('smb-autodisconnect','SMB idle disconnect too long','idle minutes before disconnecting a session\s+= 120',$true,'b')
+    ,@('null-session-fallback','NULL session fallback allowed','NULL session fallback = off\s+= 1',$true,'b')
+    ,@('boot-testsigning','Test signing on',"Boot option 'testsigning' is ON",$false,'b')
+    ,@('defender-ignore-severe','Policy ignores severe threats','Policy tells Defender to IGNORE severe threats',$true,'b')
+    ,@('defender-ignore-severe','High threats default action Allow','Defender default action for High threats = Allow',$true,'b')
+    ,@('defender-script-scan-policy','Script scanning off by policy','Policy Real-Time Protection\\DisableScriptScanning = 1',$true,'b')
+    ,@('driver-mimidrv','Mimikatz driver','Attack driver: mimidrv',$false,'b')
+    ,@('rdp-on','RDP secure RPC not required','Require secure RPC communication" is not enabled',$true,'b')
+    ,@('firefox-autoconfig','Firefox AutoConfig file','Firefox AutoConfig file: .*autoconfig\.js',$false,'b')
     ,@('root-file','Password file directly in C:\','C:\\passwords\.txt',$false,'f')
     ,@('tool-nc','Hacking tool by file name','^\[!\] C:\\Users\\Public\\nc\.exe',$false,'f')
     ,@('media-mp3','Media file','song\.mp3',$false,'f')
@@ -157,6 +171,12 @@ if (Planted 'autologon') {
     Rec 'Harden.ps1' 'AutoAdminLogon = 0' ("$(RegVal 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' 'AutoAdminLogon')" -eq '0')
 }
 if (Planted 'winrm-basic') { Rec 'Harden.ps1' 'WinRM Basic auth and unencrypted traffic off' (((RegVal 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WinRM\Service' 'AllowBasic') -eq 0) -and ((RegVal 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WinRM\Service' 'AllowUnencryptedTraffic') -eq 0)) }
+if (Planted 'defender-ignore-severe') {
+    Rec 'Harden.ps1' 'Ignore-severe-threats policy removed' ($null -eq (RegVal 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Threats\ThreatSeverityDefaultAction' '5'))
+    Rec 'Harden.ps1' 'High threat default action no longer Allow' ((Get-MpPreference).HighThreatDefaultAction -notin 6, 9) "is $((Get-MpPreference).HighThreatDefaultAction)"
+}
+if (Planted 'defender-script-scan-policy') { Rec 'Harden.ps1' 'DisableScriptScanning policy removed' ($null -eq (RegVal 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection' 'DisableScriptScanning')) }
+if (Planted 'rdp-on') { Rec 'Harden.ps1' 'RDP requires secure RPC' ((RegVal 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services' 'fEncryptRPCTraffic') -eq 1) }
 if (Planted 'rdp-nla-policy-off') { Rec 'Harden.ps1' 'RDP NLA policy back on' ((RegVal 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services' 'UserAuthentication') -eq 1) }
 if (Planted 'fw-domain-off') { Rec 'Harden.ps1' 'GP firewall policy no longer turns Domain profile off' ((RegVal 'HKLM:\SOFTWARE\Policies\Microsoft\WindowsFirewall\DomainProfile' 'EnableFirewall') -eq 1) }
 if (Planted 'defender-policy-off') { Rec 'Harden.ps1' 'DisableAntiSpyware policy removed' ($null -eq (RegVal 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender' 'DisableAntiSpyware')) }

@@ -338,6 +338,11 @@ $opts = @(
     ,@('HKLM:\SYSTEM\CurrentControlSet\Services\Netlogon\Parameters','RequireStrongKey',1,'Domain member: require strong session key')
     ,@('HKLM:\SYSTEM\CurrentControlSet\Services\LDAP','LDAPClientIntegrity',1,'LDAP client signing = Negotiate signing')
     ,@('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer','NoAutorun',1,'Turn off Autorun')
+    ,@('HKLM:\SYSTEM\CurrentControlSet\Control\Lsa\MSV1_0','allownullsessionfallback',0,'Network security: allow LocalSystem NULL session fallback = off')
+    ,@('HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\kernel','DisableExceptionChainValidation',0,'SEHOP on (MSS: DisableExceptionChainValidation = 0)')
+    ,@('HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\kernel','ObCaseInsensitive',1,'System objects: require case insensitivity')
+    ,@('HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager','ProtectionMode',1,'System objects: strengthen default permissions')
+    ,@('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Attachments','SaveZoneInformation',2,'Do not preserve zone information = Disabled (keep Mark of the Web)')
 )
 foreach ($o in $opts) {
     $v = Get-RegValue $o[0] $o[1]
@@ -345,6 +350,14 @@ foreach ($o in $opts) {
     elseif ([string]$v -eq [string]$o[2]) { Good ("{0,-62} = {1}" -f $o[3], $v) }
     else { Flag ("{0,-62} = {1}  (want {2})" -f $o[3], $v, $o[2]) }
 }
+$ad = Get-RegValue 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters' 'autodisconnect'
+if ($null -ne $ad -and ($ad -gt 15 -or $ad -lt 0)) { Flag ("{0,-62} = {1}  (want 1-15)" -f 'SMB server: idle minutes before disconnecting a session', $ad) }
+$psShell = Get-RegValue 'Registry::HKEY_CLASSES_ROOT\Microsoft.PowerShellScript.1\Shell' ''
+if ($psShell -eq '0') { Flag 'Double-clicking a .ps1 file RUNS it (HKCR\Microsoft.PowerShellScript.1\Shell default = 0; normal is Open = Notepad)' }
+$psl = Get-RegValue 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment' '__PSLockdownPolicy'
+if ($null -ne $psl) { Check "__PSLockdownPolicy = $psl (4 = PowerShell constrained language for everyone; scored on one practice image, but it breaks most scripts, so set it last)" }
+$vbs = Get-RegValue 'HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard' 'EnableVirtualizationBasedSecurity'
+if ($vbs -ne 1) { Check 'Virtualization-based security not enabled (DeviceGuard\EnableVirtualizationBasedSecurity; scored on a practice image)' }
 $idle = Get-RegValue 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' 'InactivityTimeoutSecs'
 if ($null -eq $idle) { Check ("{0,-62} not set (want 1-900)" -f 'Interactive logon: machine inactivity limit (seconds)') }
 elseif ($idle -ge 1 -and $idle -le 900) { Good ("{0,-62} = {1}" -f 'Interactive logon: machine inactivity limit (seconds)', $idle) }
@@ -431,13 +444,28 @@ foreach ($n in 'ExclusionPath','ExclusionProcess','ExclusionExtension','Exclusio
 foreach ($x in @($pref.ExclusionPath) | Where-Object { $_ -match '^[A-Za-z]:\\?$' }) { Flag "Defender excludes the whole $x drive" }
 $defPol = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender'
 foreach ($n in 'DisableAntiSpyware','DisableAntiVirus') { if ((Get-RegValue $defPol $n) -eq 1) { Flag "Policy $n = 1 (Defender disabled by policy)" } }
-foreach ($n in 'DisableRealtimeMonitoring','DisableBehaviorMonitoring','DisableOnAccessProtection','DisableScanOnRealtimeEnable','DisableIOAVProtection') {
+foreach ($n in 'DisableRealtimeMonitoring','DisableBehaviorMonitoring','DisableOnAccessProtection','DisableScanOnRealtimeEnable','DisableIOAVProtection','DisableScriptScanning') {
     if ((Get-RegValue "$defPol\Real-Time Protection" $n) -eq 1) { Flag "Policy Real-Time Protection\$n = 1" }
+}
+# 'Specify threat alert levels at which default action should not be taken': value name = level (4 high, 5 severe), data 6 = ignore/allow
+$tsda = Get-Item -LiteralPath "$defPol\Threats\ThreatSeverityDefaultAction" -ErrorAction SilentlyContinue
+if ($tsda) {
+    foreach ($lvl in $tsda.GetValueNames()) {
+        $lvlName = switch ($lvl) { '1' {'low'} '2' {'moderate'} '4' {'high'} '5' {'severe'} default { $lvl } }
+        if ([string]$tsda.GetValue($lvl) -in '6','9') { Flag "Policy tells Defender to IGNORE $lvlName threats (Threats\ThreatSeverityDefaultAction\$lvl = $($tsda.GetValue($lvl)))" }
+    }
 }
 if ((Get-RegValue "$defPol\Spynet" 'SpynetReporting') -eq 0) { Flag 'Policy turns off cloud-delivered protection (Spynet\SpynetReporting = 0)' }
 if ($pref) {
     if ($pref.MAPSReporting -eq 0) { Check 'Cloud-delivered protection (MAPS) is off' }
     if ($pref.PUAProtection -ne 1) { Check 'Potentially unwanted app (PUA) blocking is off' }
+    foreach ($n in 'DisableScriptScanning','DisableBehaviorMonitoring','DisableIOAVProtection','DisableRealtimeMonitoring','DisableBlockAtFirstSeen') {
+        if ($pref.$n -eq $true) { Flag "Defender setting $n = True" }
+    }
+    foreach ($lv in 'Severe','High','Moderate','Low') {
+        $a = $pref."${lv}ThreatDefaultAction"
+        if ($a -in 6, 9) { $txt = "Defender default action for $lv threats = $(if ($a -eq 6) {'Allow'} else {'NoAction'})"; if ($lv -in 'Severe','High') { Flag $txt } else { Check $txt } }
+    }
     if ($pref.EnableControlledFolderAccess -ne 1) { Check 'Controlled folder access is off (test before enabling: it can stop README apps from saving to Documents)' }
     $asrIds = @(@($pref.AttackSurfaceReductionRules_Ids) | Where-Object { $_ })   # @() keeps a single rule as a list
     $asrAct = @($pref.AttackSurfaceReductionRules_Actions)
@@ -447,6 +475,14 @@ if ($pref) {
         if ($act -eq 'Disabled') { Check "ASR rule $($asrIds[$i]) is set to Disabled" } else { Info "ASR rule $($asrIds[$i]) = $act" }
     }
     if ($pref.AttackSurfaceReductionOnlyExclusions) { Check "ASR exclusions: $($pref.AttackSurfaceReductionOnlyExclusions -join '; ')" }
+}
+
+$bl = Get-BitLockerVolume -MountPoint 'C:' -ErrorAction SilentlyContinue
+if ($bl) { if ($bl.ProtectionStatus -ne 'On') { Check "BitLocker on C: is $($bl.VolumeStatus) / protection $($bl.ProtectionStatus) (some images score turning it on - only if the README allows)" } else { Good 'BitLocker protects C:' } }
+else {
+    $mb = (manage-bde -status C: 2>$null) -join ' '
+    if ($mb -match 'Protection Status:\s+Protection (On|Off)') { if ($Matches[1] -ne 'On') { Check 'BitLocker protection on C: is OFF (some images score turning it on - only if the README allows)' } }
+    else { Info 'BitLocker: not available on this system (feature not installed)' }
 }
 
 Info 'Exploit protection (Windows Security > App & browser control > Exploit protection):'
@@ -468,7 +504,11 @@ foreach ($k in Get-ChildItem 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion
     if ([string]$m.SEHOP.Enable -eq 'OFF') { $off += 'SEHOP' }
     if ($off) { Check "Exploit protection override for $($k.PSChildName): $($off -join ', ') OFF" }
 }
-$nxLine = bcdedit /enum '{current}' 2>$null | Select-String -Pattern '^\s*nx\s+(\S+)'
+$bcd = bcdedit /enum '{current}' 2>$null
+foreach ($bk in 'debug','bootdebug','testsigning','nointegritychecks') {
+    if ($bcd | Select-String -Pattern "^\s*$bk\s+Yes") { Flag "Boot option '$bk' is ON (bcdedit /set {current} $bk off)" }
+}
+$nxLine = $bcd | Select-String -Pattern '^\s*nx\s+(\S+)'
 if ($nxLine) {
     $nx = $nxLine.Matches[0].Groups[1].Value
     if ($nx -eq 'AlwaysOff') { Flag 'DEP is AlwaysOff (bcdedit nx)' } elseif ($nx -eq 'OptIn') { Check 'DEP is OptIn (Windows client default). The guide recommends OptOut: sysdm.cpl > Advanced > Performance > Data Execution Prevention' } else { Info "    DEP (bcdedit nx): $nx" }
@@ -502,6 +542,9 @@ if ($rdpOff -eq 0) {
     if ($nla -ne 1) { Flag 'RDP does not require Network Level Authentication' }
     $lvl = Get-RegValue 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' 'SecurityLayer'
     if ($lvl -ne 2) { Check "RDP SecurityLayer = $lvl (2 = TLS)" }
+    $tsp = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
+    if ((Get-RegValue $tsp 'fEncryptRPCTraffic') -ne 1) { Check 'RDP: "Require secure RPC communication" is not enabled (Terminal Services\fEncryptRPCTraffic)' }
+    if ((Get-RegValue $tsp 'MinEncryptionLevel') -lt 3) { Check 'RDP: client connection encryption level is not High (Terminal Services\MinEncryptionLevel = 3)' }
 } else { Info 'Remote Desktop is off' }
 $tsPol = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
 if ((Get-RegValue $tsPol 'UserAuthentication') -eq 0) { Flag 'Group Policy turns OFF RDP Network Level Authentication (Terminal Services\UserAuthentication = 0)' }
@@ -548,6 +591,18 @@ foreach ($s in $svcs) {
         Check "Unquoted service path with a space: $($s.Name) -> $p"
     }
 }
+# Malware swapped into a built-in service: the service still has a ServiceDll (it belongs in svchost) but runs some other exe,
+# or its exe sits in an unusual folder under C:\Windows (e.g. C:\Windows\Globalization\Sorting\...).
+foreach ($s in $svcs) {
+    $p = [string]$s.PathName
+    if (-not $p) { continue }
+    $sdll = Get-RegValue "HKLM:\SYSTEM\CurrentControlSet\Services\$($s.Name)\Parameters" 'ServiceDll'
+    if ($sdll -and $p -notmatch '(?i)\\svchost\.exe') { Flag "Service $($s.Name) has a ServiceDll (normally runs in svchost) but runs: $p" }
+    $exe = if ($p -match '^"?([^"]+?\.(exe|com|bat|cmd))') { $Matches[1] } else { $p.Split(' ')[0] }
+    if ($exe -match '^(?i)C:\\Windows\\' -and $exe -notmatch '^(?i)C:\\Windows\\(System32|SysWOW64|Microsoft\.NET|servicing|ADWS|WinSxS|PSSDNSvc|vss|CCM|ccmsetup|SystemApps|ImmersiveControlPanel|explorer\.exe)') {
+        Check "Service $($s.Name) runs from an unusual Windows folder: $p"
+    }
+}
 foreach ($s in $svcs | Where-Object { $_.PathName -match '(?i)\\(cmd|powershell|pwsh|mshta|rundll32|regsvr32|wscript|cscript|nc|ncat)\.exe' -and $_.Name -notmatch '^(?i)(WinDefend|Sense)$' }) {
     Flag "Service $($s.Name) runs a shell/LOLBin: $($s.PathName)"
 }
@@ -574,6 +629,17 @@ foreach ($k in Get-ChildItem 'HKLM:\SYSTEM\CurrentControlSet\Services') {
     if (($t -band 0x30) -and -not ($t -band 0xC0) -and -not $scm.ContainsKey($k.PSChildName.ToLower())) { Flag "Hidden service: $($k.PSChildName) -> $img"; $hiddenFound = $true }
 }
 if (-not $hiddenFound) { Info '    none' }
+
+Info 'Kernel drivers outside the Windows driver folders, or known attack drivers (mimikatz mimidrv, vulnerable-driver kits):'
+$drvFound = $false
+foreach ($drv in Get-CimInstance Win32_SystemDriver) {
+    $drvPath = [string]$drv.PathName
+    $drvBad = ($drv.Name -match '(?i)^(mimidrv|mimikatz|kprocesshacker|rtcore64|gdrv|dbutil_2_3|winring0|capcom|iqvw64e|asrdrv)') -or ($drvPath -match '(?i)mimidrv|mimikatz')
+    $drvOdd = $drvPath -and $drvPath -notmatch '(?i)^(\\\?\?\\)?(C:\\Windows\\(System32|SysWOW64)\\(drivers|DriverStore)\\|C:\\Windows\\System32\\[^\\]+\.sys$|C:\\ProgramData\\Microsoft\\Windows Defender\\)'
+    if ($drvBad) { Flag "Attack driver: $($drv.Name) ($($drv.State), $($drv.StartMode)) -> $drvPath"; $drvFound = $true }
+    elseif ($drvOdd -and $drv.StartMode -ne 'Disabled') { Check ("Driver {0,-20} {1,-8} {2,-7} {3}" -f $drv.Name, $drv.State, $drv.StartMode, $drvPath); $drvFound = $true }
+}
+if (-not $drvFound) { Info '    none' }
 
 Info 'Services with a DENY entry in their permissions (locked services, sc sdshow):'
 foreach ($s in Get-Service) {
@@ -631,6 +697,16 @@ foreach ($rk in $runKeys) {
     if (-not $k) { continue }
     foreach ($n in $k.GetValueNames()) { Check ("{0}`n        {1} = {2}" -f $rk, $n, $k.GetValue($n)) }
 }
+Info 'Control Panel items registered as CPL files (a .cpl is a DLL that runs when Control Panel opens):'
+$cplKeys = @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Control Panel\Cpls', 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Control Panel\Cpls') +
+           @((Get-ChildItem Registry::HKEY_USERS | Where-Object { $_.PSChildName -match '^S-1-5-21-[\d-]+$' }).PSChildName | ForEach-Object { "Registry::HKEY_USERS\$_\Software\Microsoft\Windows\CurrentVersion\Control Panel\Cpls" })
+$cplFound = $false
+foreach ($ck in $cplKeys) {
+    $k = Get-Item -LiteralPath $ck -ErrorAction SilentlyContinue
+    if (-not $k) { continue }
+    foreach ($n in $k.GetValueNames()) { $v = [string]$k.GetValue($n); $cplFound = $true; if ($v -match '(?i)^(%SystemRoot%|C:\\Windows)\\System32\\') { Info "    $n = $v" } else { Flag "CPL item $n = $v  ($ck)" } }
+}
+if (-not $cplFound) { Info '    none' }
 Info 'Startup folders:'
 $startup = @("$env:ProgramData\Microsoft\Windows\Start Menu\Programs\Startup") + (Get-ChildItem 'C:\Users' -Directory | ForEach-Object { "$($_.FullName)\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup" })
 foreach ($sf in $startup) { Get-ChildItem $sf -File -Force | Where-Object { $_.Name -ne 'desktop.ini' } | ForEach-Object { Check $_.FullName } }
@@ -932,6 +1008,14 @@ if ((Test-Path 'C:\Program Files\Google\Chrome\Application\chrome.exe') -or (Tes
     if (-not $cpol -or $cpol.GetValue('AdsSettingForIntrusiveAdsSites', $null) -ne 2) { Check 'Chrome does not block intrusive ads by policy (AdsSettingForIntrusiveAdsSites=2 was scored)' }
 }
 foreach ($pj in 'C:\Program Files\Mozilla Firefox\distribution\policies.json','C:\Program Files (x86)\Mozilla Firefox\distribution\policies.json') { if (Test-Path $pj) { Check "Firefox policies.json present - read it: $pj" } }
+foreach ($ffDir in 'C:\Program Files\Mozilla Firefox','C:\Program Files (x86)\Mozilla Firefox') {
+    if (-not (Test-Path "$ffDir\firefox.exe")) { continue }
+    # AutoConfig can lock bad prefs or crash Firefox on start (mozilla.cfg + a defaults\pref\*.js that points at it)
+    foreach ($ac in Get-ChildItem "$ffDir\defaults\pref\*.js", "$ffDir\*.cfg" -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne 'channel-prefs.js' }) { Flag "Firefox AutoConfig file: $($ac.FullName) - read it (locked prefs, startup crash)" }
+    $ffPol = Get-Item 'HKLM:\SOFTWARE\Policies\Mozilla\Firefox' -ErrorAction SilentlyContinue
+    if ($ffPol) { foreach ($n in $ffPol.GetValueNames()) { Info "    Firefox policy $n = $($ffPol.GetValue($n))" } }
+    if (-not $ffPol -or $ffPol.GetValue('DisableFirefoxAccounts', $null) -ne 1) { Check 'Firefox: no policy disabling Firefox Accounts (DisableFirefoxAccounts was scored on a practice image)' }
+}
 $ffBad = [ordered]@{
     'dom.disable_open_during_load", false'          = 'pop-up blocker OFF'
     'browser.safebrowsing.malware.enabled", false'  = 'malware protection OFF'

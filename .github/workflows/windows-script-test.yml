@@ -2,7 +2,8 @@ name: Windows script test
 
 on:
   push:
-    branches: [main]
+    branches: [main, image-test]
+    paths: ['scripts/**', 'tests/**', '.github/workflows/windows-script-test.yml']
   workflow_dispatch:
 
 permissions:
