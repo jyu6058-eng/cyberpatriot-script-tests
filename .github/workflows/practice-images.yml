@@ -1,0 +1,72 @@
+name: Practice image test
+
+# Boots community CyberPatriot practice images (VMware) under QEMU/KVM on a
+# Linux runner, then runs Audit -> Harden -> reboot -> Audit inside each one
+# and saves the image's own scoring report before and after.
+on:
+  push:
+    branches: [image-test]
+    paths: ['images/**', 'scripts/**', '.github/workflows/practice-images.yml']
+  workflow_dispatch:
+    inputs:
+      only:
+        description: 'Comma-separated image keys to run (blank = all)'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  image:
+    name: ${{ matrix.key }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - key: troy-win10
+            row: 2
+            title: TROY WINDOWS 10 MOCK
+            drive_id: 1jz8YMa7VOimnV9ErbkWOmHtBavlBwOqc
+            size: 17242745796
+            extra_scoring: 1t0k-VgvMBZWzGhDM8GNWbJLWStP1z5T0
+          - key: beyond-journeys-end
+            row: 3
+            title: BEYOND JOURNEY'S END (Server 2022)
+            drive_id: 1PRe5T9WXljVBh2e9CBqCpzObezsBb-HH
+            size: 4403987049
+            extra_scoring: ''
+          - key: middlesea-hospital
+            row: 4
+            title: MIDDLESEA HOSPITAL (Server 2025)
+            drive_id: 1zIJsxN4fqYn-W4-8u-O6UZeOlGc3sXD9
+            size: 23206855171
+            extra_scoring: ''
+          - key: ppth-win11
+            row: 9
+            title: PRINCETON-PLAINSBORO TEACHING HOSPITAL (Windows 11)
+            drive_id: 1RqOvBrkJjmhIVPqIv1YQ355WzQZNEKas
+            size: 25274712150
+            extra_scoring: ''
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run image
+        env:
+          KEY: ${{ matrix.key }}
+          TITLE: ${{ matrix.title }}
+          DRIVE_ID: ${{ matrix.drive_id }}
+          EXPECT_SIZE: ${{ matrix.size }}
+          EXTRA_SCORING_ID: ${{ matrix.extra_scoring }}
+          ONLY: ${{ inputs.only }}
+        run: bash images/run-image.sh
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-${{ matrix.key }}
+          path: out/${{ matrix.key }}
+          if-no-files-found: warn
