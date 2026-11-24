@@ -305,10 +305,17 @@ Set-Reg 'HKCU:\SOFTWARE\Policies\Microsoft\Windows\Installer' 'AlwaysInstallElev
 
 # ------------------------------------------------------------------ 5. firewall
 Step 'Windows Firewall (turn on; no ports are blocked)'
+foreach ($fs in 'BFE','MpsSvc') {
+    $svc = Get-Service $fs -ErrorAction SilentlyContinue
+    if ($svc -and ($svc.StartType -ne 'Automatic' -or $svc.Status -ne 'Running')) {
+        Run "$fs -> Automatic and started (the firewall needs it; was $($svc.StartType)/$($svc.Status))" { Set-Service $fs -StartupType Automatic -ErrorAction Stop; Start-Service $fs -ErrorAction Stop }
+    }
+}
 Run 'enable Domain/Private/Public profiles' { Set-NetFirewallProfile -Profile Domain,Private,Public -Enabled True -DefaultInboundAction Block -DefaultOutboundAction Allow -LogBlocked True -LogMaxSizeKilobytes 16384 }
 foreach ($pp in 'DomainProfile','PrivateProfile','PublicProfile') {
     $k = Get-Item -LiteralPath "HKLM:\SOFTWARE\Policies\Microsoft\WindowsFirewall\$pp" -ErrorAction SilentlyContinue
     if ($k -and $null -ne $k.GetValue('EnableFirewall', $null)) { Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\WindowsFirewall\$pp" 'EnableFirewall' 1 }
+    if ($k -and $k.GetValue('DefaultInboundAction', $null) -eq 0) { Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\WindowsFirewall\$pp" 'DefaultInboundAction' 1 }   # policy said allow
 }
 
 # ------------------------------------------------------------------ 6. Defender

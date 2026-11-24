@@ -158,6 +158,27 @@ Plant 'asr-one-disabled' {
 }
 Plant 'exclusion-whole-drive' { Add-MpPreference -ExclusionPath 'C:\' }
 Plant 'root-file' { Set-Content 'C:\passwords.txt' 'admin:Summer2024!' }
+# ---------- found by running the PPTH practice image
+Plant 'task-ms-powershell' {
+    $a = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-w hidden -File C:\Users\Public\reset.ps1'
+    $t = New-ScheduledTaskTrigger -Once -At ([datetime]'2099-01-01')
+    Register-ScheduledTask -TaskPath '\Microsoft\Windows\Maintenance\' -TaskName 'SysCheck' -Action $a -Trigger $t -ErrorAction Stop | Out-Null
+    Disable-ScheduledTask -TaskPath '\Microsoft\Windows\Maintenance\' -TaskName 'SysCheck' | Out-Null
+}
+Plant 'task-wininit' {
+    # Never allowed to run: disabled and dated 2099 (running wininit.exe as a task blue-screens the PC).
+    $a = New-ScheduledTaskAction -Execute 'wininit.exe'
+    $t = New-ScheduledTaskTrigger -Once -At ([datetime]'2099-01-01')
+    Register-ScheduledTask -TaskName 'MicrosoftEdgeUpdateTaskUserUA' -Action $a -Trigger $t -ErrorAction Stop | Out-Null
+    Disable-ScheduledTask -TaskName 'MicrosoftEdgeUpdateTaskUserUA' | Out-Null
+}
+Plant 'fw-public-allow' { Set-NetFirewallProfile -Profile Public -DefaultInboundAction Allow -ErrorAction Stop }
+Plant 'hidden-anydesk' {
+    $f = Join-Path ([Environment]::GetFolderPath('Desktop')) 'AnyDesk.exe'
+    Copy-Item "$env:windir\System32\PING.EXE" $f -Force
+    (Get-Item $f -Force).Attributes = 'Hidden'
+}
+
 # ---------- a fake scoring engine (aeacus-style) must be reported as "leave it alone", never [!]
 Plant 'engine-aeacus' {
     New-Item -ItemType Directory -Force 'C:\aeacus' | Out-Null

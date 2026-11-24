@@ -59,6 +59,7 @@ function Get-RegValue([string]$path, [string]$name) {
 }
 
 # The CyberPatriot scoring client and community engines (aeacus) look like malware to a scanner. Never touch them.
+$mimiRx = '(?i)mimikatz|mimidrv|mimilib|gentilkiwi|benjamin delpy'   # survives renaming: it is in the file's version info
 $engineRx = '(?i)\\(aeacus|CyberPatriot|CCS)\\|\\(phocus|CCSClient)\.exe'
 function Is-Engine([string]$p) { return ($p -match $engineRx) }
 
@@ -426,6 +427,10 @@ if ($lgpScripts) { foreach ($f in $lgpScripts) { Flag "$($f.FullName)"; if ($f.E
 Section 'DEFENSIVE COUNTERMEASURES (firewall, Defender, SMB, RDP)'
 foreach ($p in Get-NetFirewallProfile) {
     if ($p.Enabled -eq 'True' -or $p.Enabled -eq $true) { Good "Firewall $($p.Name) profile enabled (inbound default: $($p.DefaultInboundAction))" } else { Flag "Firewall $($p.Name) profile is OFF" }
+    if ([string]$p.DefaultInboundAction -eq 'Allow') { Flag "Firewall $($p.Name) profile ALLOWS inbound connections that match no rule (should be Block)" }
+}
+foreach ($pp in 'DomainProfile','PrivateProfile','PublicProfile') {
+    if ((Get-RegValue "HKLM:\SOFTWARE\Policies\Microsoft\WindowsFirewall\$pp" 'DefaultInboundAction') -eq 0) { Flag "Group Policy makes the $pp firewall ALLOW unmatched inbound connections (WindowsFirewall\$pp DefaultInboundAction=0)" }
 }
 foreach ($pp in 'DomainProfile','PrivateProfile','PublicProfile') {
     $v = Get-RegValue "HKLM:\SOFTWARE\Policies\Microsoft\WindowsFirewall\$pp" 'EnableFirewall'
@@ -653,6 +658,11 @@ $drvFound = $false
 foreach ($drv in Get-CimInstance Win32_SystemDriver) {
     $drvPath = [string]$drv.PathName
     $drvBad = ($drv.Name -match '(?i)^(mimidrv|mimikatz|kprocesshacker|rtcore64|gdrv|dbutil_2_3|winring0|capcom|iqvw64e|asrdrv)') -or ($drvPath -match '(?i)mimidrv|mimikatz')
+    $drvFile = $drvPath -replace '^\\\?\?\\', '' -replace '^(?i)\\SystemRoot\\', "$env:SystemRoot\"
+    if (-not $drvBad -and $drvFile -and [IO.File]::Exists($drvFile)) {
+        $vi = [Diagnostics.FileVersionInfo]::GetVersionInfo($drvFile)
+        if ("$($vi.CompanyName) $($vi.ProductName) $($vi.OriginalFilename) $($vi.InternalName)" -match $mimiRx) { $drvBad = $true }
+    }
     $drvOdd = $drvPath -and $drvPath -notmatch '(?i)^(\\\?\?\\)?(C:\\Windows\\(System32|SysWOW64)\\(drivers|DriverStore)\\|C:\\Windows\\System32\\[^\\]+\.sys$|C:\\ProgramData\\Microsoft\\Windows Defender\\)'
     if ($drvBad) { Flag "Attack driver: $($drv.Name) ($($drv.State), $($drv.StartMode)) -> $drvPath"; $drvFound = $true }
     elseif ($drvOdd -and $drv.StartMode -ne 'Disabled') { Check ("Driver {0,-20} {1,-8} {2,-7} {3}" -f $drv.Name, $drv.State, $drv.StartMode, $drvPath); $drvFound = $true }
@@ -742,10 +752,30 @@ foreach ($sf in $startup) {
 
 Out-Line ''
 Info 'Scheduled tasks outside \Microsoft\ (with what they run):'
-foreach ($t in Get-ScheduledTask | Where-Object { $_.TaskPath -notlike '\Microsoft\*' }) {
+$allTasks = @(Get-ScheduledTask)
+$coreRx  = '(?i)(^|\\)(wininit|csrss|smss|lsass|services|winlogon|svchost)(\.exe)?$'   # never launched by a task; wininit = instant blue screen
+$shellRx = '(?i)(^|\\)(powershell|pwsh|cmd|wscript|cscript|mshta|rundll32|regsvr32|bitsadmin|certutil)(\.exe)?$'
+foreach ($t in $allTasks | Where-Object { $_.TaskPath -notlike '\Microsoft\*' }) {
     $acts = ($t.Actions | ForEach-Object { "$($_.Execute) $($_.Arguments)".Trim() }) -join ' | '
-    Check ("{0}{1}  [{2}]  -> {3}" -f $t.TaskPath, $t.TaskName, $t.State, $acts)
+    $line = "{0}{1}  [{2}]  -> {3}" -f $t.TaskPath, $t.TaskName, $t.State, $acts
+    if (Is-Engine $acts) { Info "    $line   <- scoring engine" }
+    elseif (@($t.Actions | Where-Object { $_.Execute -and [Environment]::ExpandEnvironmentVariables($_.Execute).Trim('"') -match $coreRx }).Count) { Flag "$line   (a task should never start a core Windows process; wininit.exe here means a blue screen)" }
+    elseif ($t.TaskName -match '^(?i)Microsoft|OneDrive|Google|Adobe' -and @($t.Actions | Where-Object { $_.Execute -match $shellRx }).Count) { Flag "$line   (vendor-looking name, but it runs a shell)" }
+    else { Check $line }
 }
+Info 'Tasks inside \Microsoft\ that run a shell or script (Microsoft''s own tasks almost never do - malware hides here):'
+$msFound = $false
+foreach ($t in $allTasks | Where-Object { $_.TaskPath -like '\Microsoft\*' }) {
+    foreach ($a in @($t.Actions | Where-Object { $_.Execute })) {
+        $exe = [Environment]::ExpandEnvironmentVariables($a.Execute).Trim('"')
+        # rundll32/cscript are left out on purpose: several built-in tasks use them (Autochk Proxy, SystemRestore SR, CleanupOldPerfLogs).
+        if ($exe -match '(?i)(^|\\)(powershell|pwsh|cmd|mshta|wscript|bitsadmin|certutil)(\.exe)?$' -or $exe -match $coreRx -or
+            $a.Arguments -match '(?i)\.ps1\b|-enc(odedcommand)?\b|\s-e\s|frombase64string|downloadstring|downloadfile|\biex\b|invoke-expression|invoke-webrequest') {
+            Flag ("{0}{1}  [{2}]  -> {3} {4}" -f $t.TaskPath, $t.TaskName, $t.State, $a.Execute, $a.Arguments); $msFound = $true
+        }
+    }
+}
+if (-not $msFound) { Info '    none' }
 Info 'Hidden scheduled tasks (registry entry with no security descriptor):'
 foreach ($k in Get-ChildItem 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Schedule\TaskCache\Tree' -Recurse) {
     if ($k.GetValue('Id', $null) -and -not $k.GetValue('SD', $null)) { Flag "Hidden task: $($k.Name -replace '^.*\\Tree','')" }
@@ -882,6 +912,12 @@ if (-not $Quick) {
             foreach ($f in [IO.Directory]::EnumerateFiles($dir)) {
                 $scanned++
                 $name = [IO.Path]::GetFileName($f)
+                $ext = [IO.Path]::GetExtension($name)
+                if ($ext -in '.sys', '.exe', '.dll' -and ($ext -eq '.sys' -or -not $noMediaRx.IsMatch($f))) {
+                    $vi = $null; try { $vi = [Diagnostics.FileVersionInfo]::GetVersionInfo($f) } catch { }
+                    if ($vi -and "$($vi.CompanyName) $($vi.ProductName) $($vi.OriginalFilename) $($vi.InternalName)" -match $mimiRx) { $tools++; Flag "mimikatz file (found by its version info, whatever it is named): $f"; continue }
+                    if ($ext -eq '.sys' -and -not $noMediaRx.IsMatch($f)) { Check "Driver file outside Windows: $f" }
+                }
                 if ($tools -lt 40 -and $toolRx.IsMatch($name)) { $tools++; Flag $f }
                 elseif ($mediaHits -lt 80 -and $mediaRx.IsMatch($name) -and -not $noMediaRx.IsMatch($f)) {
                     $mediaHits++
@@ -922,7 +958,7 @@ foreach ($pf in 'C:\Program Files','C:\Program Files (x86)','C:\ProgramData') {
 if (-not $Quick) {
     Get-ChildItem 'C:\Users\*\Desktop','C:\Users\*\Documents','C:\Users\*\Downloads','C:\Users\*\Music','C:\Users\*\Pictures','C:\Users\*\Videos' -Recurse -Force -ErrorAction SilentlyContinue |
         Where-Object { ($_.Attributes -band [IO.FileAttributes]::Hidden) -and $_.Name -ne 'desktop.ini' -and -not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) } |
-        Select-Object -First 40 | ForEach-Object { Check "Hidden item: $($_.FullName)" }
+        Select-Object -First 40 | ForEach-Object { if ($_.Name -match $badWords) { Flag "Hidden item that looks like a tool or game: $($_.FullName)" } else { Check "Hidden item: $($_.FullName)" } }
 
     Info 'Alternate data streams (data hidden inside another file; Zone.Identifier is normal):'
     $adsRoots = @('C:\Users') + @($webRoots | Where-Object { Test-Path $_ })

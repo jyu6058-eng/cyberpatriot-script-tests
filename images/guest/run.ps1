@@ -54,6 +54,37 @@ function Dismount-UserHive {
     Log "unloaded user hive: exit $LASTEXITCODE $r"
 }
 
+# QEMU gives the VM a new network adapter, so a static IP the image had (servers and DCs) stays on the old,
+# now-missing adapter and services like DNS or a website look "down" to the scoring engine. Copy it over.
+function Restore-StaticIP {
+    $cur = Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' } | Select-Object -First 1
+    if (-not $cur) { $cur = Get-NetAdapter -ErrorAction SilentlyContinue | Select-Object -First 1 }
+    if (-not $cur) { Log 'network: no adapter'; return }
+    $manual = @(Get-NetIPAddress -InterfaceIndex $cur.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.PrefixOrigin -eq 'Manual' })
+    if ($manual.Count) { Log "network: $($cur.Name) already has static $($manual[0].IPAddress)"; return }
+    foreach ($k in Get-ChildItem 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces' -ErrorAction SilentlyContinue) {
+        if ($k.PSChildName -ieq $cur.InterfaceGuid) { continue }
+        $ip = @($k.GetValue('IPAddress')) | Where-Object { $_ -and $_ -ne '0.0.0.0' } | Select-Object -First 1
+        if ($k.GetValue('EnableDHCP') -ne 0 -or -not $ip) { continue }
+        $mask = @($k.GetValue('SubnetMask'))[0]
+        $prefix = (($mask -split '\.') | ForEach-Object { [Convert]::ToString([int]$_, 2) } | ForEach-Object { ($_ -replace '0', '').Length } | Measure-Object -Sum).Sum
+        $gw = @($k.GetValue('DefaultGateway')) | Where-Object { $_ } | Select-Object -First 1
+        $dns = @(([string]$k.GetValue('NameServer')) -split '[, ]+' | Where-Object { $_ })
+        try {
+            Set-NetIPInterface -InterfaceIndex $cur.ifIndex -Dhcp Disabled -ErrorAction Stop
+            Get-NetIPAddress -InterfaceIndex $cur.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Remove-NetIPAddress -Confirm:$false -ErrorAction SilentlyContinue
+            Remove-NetRoute -InterfaceIndex $cur.ifIndex -DestinationPrefix '0.0.0.0/0' -Confirm:$false -ErrorAction SilentlyContinue
+            $a = @{ InterfaceIndex = $cur.ifIndex; IPAddress = $ip; PrefixLength = $prefix; ErrorAction = 'Stop' }
+            if ($gw) { $a.DefaultGateway = $gw }
+            New-NetIPAddress @a | Out-Null
+            if ($dns.Count) { Set-DnsClientServerAddress -InterfaceIndex $cur.ifIndex -ServerAddresses $dns -ErrorAction Stop }
+            Log "network: copied the image's static IP $ip/$prefix gw $gw dns $($dns -join ',') to $($cur.Name)"
+        } catch { Log "network: could not copy static IP $ip ($($_.Exception.Message))" }
+        return
+    }
+    Log "network: image had no static IPv4 address; keeping DHCP on $($cur.Name)"
+}
+
 function Save-ScmErrors([string]$tag) {
     $ev = Get-WinEvent -FilterHashtable @{ LogName = 'System'; ProviderName = 'Service Control Manager'; Level = 2; StartTime = $os.LastBootUpTime } -ErrorAction SilentlyContinue
     $ev | ForEach-Object { '{0:HH:mm:ss} {1} {2}' -f $_.TimeCreated, $_.Id, ($_.Message -replace '\s+', ' ') } | Set-Content "$out\scm-errors-$tag.txt"
@@ -162,6 +193,7 @@ if ($tries -ge 2) { Log "step $($steps[$idx].n) was interrupted twice - skipping
 if ($idx -gt 0 -and $tries -gt 0) { Log "resuming: step $($steps[$idx].n) was interrupted (crash or reboot), retrying" }
 
 Mount-UserHive
+Restore-StaticIP
 Wait-Ready
 Save-ScmErrors ("boot{0:HHmm}" -f $os.LastBootUpTime)
 $script:rebooting = $false; $script:finished = $false

@@ -33,7 +33,7 @@ log "freeing disk and installing tools"
     /opt/hostedtoolcache/CodeQL /usr/local/share/boost /usr/share/swift 2>/dev/null ) &
 sudo apt-get update -qq >/dev/null 2>&1
 sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq qemu-system-x86 qemu-utils ovmf \
-    python3-hivex python3-venv ntfs-3g 7zip aria2 socat >/dev/null 2>&1 || die "apt install failed"
+    python3-hivex python3-venv ntfs-3g 7zip aria2 socat dislocker >/dev/null 2>&1 || die "apt install failed"
 python3 -m venv --system-site-packages /var/tmp/venv && /var/tmp/venv/bin/pip -q install regipy >/dev/null 2>&1 \
     || log "regipy not installed (only needed if a hive is dirty)"
 PY=/var/tmp/venv/bin/python3; [ -x "$PY" ] || PY=python3
@@ -110,34 +110,51 @@ sudo modprobe nbd max_part=16 || die "no nbd module"
 nbd_up()   { sudo qemu-nbd ${3:-} --connect="/dev/nbd$1" -f qcow2 "$2" && sleep 2 && sudo partprobe "/dev/nbd$1" 2>/dev/null; sleep 1; }
 nbd_down() { for j in $(seq 0 $((NDISK-1))); do sudo qemu-nbd --disconnect "/dev/nbd$j" >/dev/null 2>&1; done; }
 
+# Mount a partition at /mnt/w. BitLocker volumes are opened with dislocker's clear key (protection suspended);
+# a volume locked with a TPM or password cannot be opened outside VMware.
+mount_win() {   # $1 partition, $2 ro|rw
+    local p=$1 mode=$2 src=$1
+    if [ "$(sudo blkid -o value -s TYPE "$p" 2>/dev/null)" = BitLocker ]; then
+        sudo mkdir -p /mnt/bl
+        local ro=""; [ "$mode" = ro ] && ro="-r"
+        if ! sudo dislocker -V "$p" --clearkey $ro -- /mnt/bl 2>>"$OUT/host.log"; then
+            log "BitLocker on $p has no clear key (locked with TPM/password) - cannot open it. Protectors:"
+            sudo dislocker-metadata -V "$p" 2>&1 | grep -iE 'datum value type|protect|entry type' | sort | uniq -c | head -20 | tee -a "$OUT/host.log"
+            return 1
+        fi
+        src=/mnt/bl/dislocker-file; BITLOCKER=1
+    fi
+    if [ "$mode" = ro ]; then sudo mount -t ntfs-3g -o ro "$src" /mnt/w 2>/dev/null; return $?; fi
+    sudo mount -t ntfs-3g -o rw,remove_hiberfile "$src" /mnt/w 2>>"$OUT/host.log" && return 0
+    log "NTFS not clean; running ntfsfix -d on the overlay copy"
+    sudo ntfsfix -d "$src" >> "$OUT/host.log" 2>&1
+    sudo mount -t ntfs-3g -o rw,remove_hiberfile "$src" /mnt/w
+}
+umount_win() { sudo umount /mnt/w 2>/dev/null; if mountpoint -q /mnt/bl 2>/dev/null; then sudo umount /mnt/bl; fi; }
+BITLOCKER=0
 WINPART=""; WINDISK=""
 for j in $(seq 0 $((NDISK-1))); do
     nbd_up "$j" "$W/disk$j.qcow2"
     lsblk -o NAME,SIZE,FSTYPE,LABEL "/dev/nbd$j" | tee -a "$OUT/host.log"
     for p in /dev/nbd${j}p*; do
-        [ "$(sudo blkid -o value -s TYPE "$p" 2>/dev/null)" = ntfs ] || continue
-        sudo mount -t ntfs-3g -o ro "$p" /mnt/w 2>/dev/null || continue
+        case "$(sudo blkid -o value -s TYPE "$p" 2>/dev/null)" in ntfs|BitLocker) ;; *) continue;; esac
+        mount_win "$p" ro || continue
         if [ -n "$(sudo find /mnt/w -maxdepth 4 -ipath '/mnt/w/windows/system32/config/system' -print -quit 2>/dev/null)" ]; then
             WINPART=$p; WINDISK=$j
         fi
-        sudo umount /mnt/w
+        umount_win
         [ -n "$WINPART" ] && break
     done
     [ -n "$WINPART" ] && break
 done
 [ -n "$WINPART" ] || { nbd_down; die "no Windows partition found"; }
 WINPNUM=${WINPART##*p}
-log "Windows is on disk$WINDISK partition $WINPNUM"
-
-if ! sudo mount -t ntfs-3g -o rw,remove_hiberfile "$WINPART" /mnt/w 2>>"$OUT/host.log"; then
-    log "NTFS not clean; running ntfsfix -d on the overlay copy"
-    sudo ntfsfix -d "$WINPART" >> "$OUT/host.log" 2>&1
-    sudo mount -t ntfs-3g -o rw,remove_hiberfile "$WINPART" /mnt/w || { nbd_down; die "cannot mount Windows read-write"; }
-fi
+log "Windows is on disk$WINDISK partition $WINPNUM$( [ $BITLOCKER = 1 ] && echo ' (BitLocker, clear key)')"
+mount_win "$WINPART" rw || { nbd_down; die "cannot mount Windows read-write"; }
 extra=(); [ -s "$W/scoring.dat" ] && extra=(--scoring-dat "$W/scoring.dat")
 sudo "$PY" "$REPO/images/inject.py" /mnt/w "$OUT" "$REPO" "${extra[@]}" 2>&1 | tee -a "$OUT/host.log"
 rc=${PIPESTATUS[0]}
-sudo umount /mnt/w; nbd_down
+umount_win; nbd_down
 [ "$rc" = 0 ] || die "inject failed"
 
 # ------------------------------------------------------------ boot
@@ -185,11 +202,11 @@ cat "$OUT/qemu.log" >> "$OUT/host.log"
 
 # ------------------------------------------------------------ collect
 nbd_up "$WINDISK" "$W/disk$WINDISK.qcow2" -r
-sudo mount -t ntfs-3g -o ro "/dev/nbd${WINDISK}p$WINPNUM" /mnt/w || log "could not mount Windows to collect results"
+mount_win "/dev/nbd${WINDISK}p$WINPNUM" ro || log "could not mount Windows to collect results"
 if mountpoint -q /mnt/w; then
     sudo "$PY" "$REPO/images/collect.py" /mnt/w "$OUT" 2>&1 | tee -a "$OUT/host.log"
-    sudo umount /mnt/w
 fi
+umount_win
 nbd_down
 sudo chown -R "$USER" "$OUT"
 "$PY" "$REPO/images/summarize.py" "$OUT" "$TITLE" | tee "$OUT/summary.md" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
