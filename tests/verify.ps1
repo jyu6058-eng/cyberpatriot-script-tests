@@ -122,6 +122,12 @@ foreach ($d in $detect) {
 # ---------------------------------------------------------------- 2. Users.ps1 real state
 $admins = @(Get-LocalGroupMember -SID 'S-1-5-32-544' | ForEach-Object { ($_.Name -split '\\')[-1] })
 function U([string]$n) { Get-LocalUser -Name $n -ErrorAction SilentlyContinue }
+if (Planted 'user-lookalike') {
+    Rec 'Users.ps1' 'Renamed-looking user mr.stevenson NOT deleted' ([bool](U 'mr.stevenson'))
+    Rec 'Users.ps1' 'stanley.stevenson NOT auto-created (looks like mr.stevenson)' (-not (U 'stanley.stevenson'))
+}
+Rec 'Users.ps1' 'README comment lines not created as users' (-not (Get-LocalUser | Where-Object { $_.Name -match '[()?]|Ian' }))
+Rec 'Users.ps1' 'carol (name followed by a comment) kept and enabled' ([bool](U 'carol') -and (U 'carol').Enabled)
 if (Planted 'user-hacker-admin')   { Rec 'Users.ps1' 'Unauthorized admin "hacker" deleted' (-not (U 'hacker')) }
 if (Planted 'user-svc$-hidden')    { Rec 'Users.ps1' 'Hidden user "svc$" deleted' (-not (U 'svc$')) }
 if (Planted 'user-akim-admin')     { Rec 'Users.ps1' '"akim" kept but no longer an admin' ((U 'akim') -and ($admins -notcontains 'akim')) }

@@ -27,6 +27,7 @@ Plant 'user-svc$-hidden'    { New-LocalUser -Name 'svc$' -Password $pw -Descript
 Plant 'user-akim-admin'     { New-LocalUser -Name akim -Password $pw | Out-Null; Add-LocalGroupMember -SID 'S-1-5-32-545' -Member akim; Add-LocalGroupMember -SID 'S-1-5-32-544' -Member akim }
 Plant 'user-mlee-notadmin'  { New-LocalUser -Name mlee -Password $pw | Out-Null; Add-LocalGroupMember -SID 'S-1-5-32-545' -Member mlee }
 Plant 'user-carol-disabled' { New-LocalUser -Name carol -Password $pw -Disabled | Out-Null; Add-LocalGroupMember -SID 'S-1-5-32-545' -Member carol }
+Plant 'user-lookalike'      { New-LocalUser -Name 'mr.stevenson' -Password $pw -FullName 'Mr. Stevenson' | Out-Null }   # README lists stanley.stevenson
 Plant 'guest-enabled'       { Get-LocalUser | Where-Object { $_.SID.Value -like '*-501' } | Enable-LocalUser }
 
 # ---------- account policy + user rights (secedit)

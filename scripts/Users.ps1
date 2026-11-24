@@ -51,14 +51,25 @@ $meSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 $admins = New-Object System.Collections.Generic.List[string]
 $users  = New-Object System.Collections.Generic.List[string]
 $mode = ''
+$listText = Get-Content $ListFile -Raw
 foreach ($raw in Get-Content $ListFile) {
     $line = $raw.Trim()
     if (-not $line -or $line.StartsWith('#')) { continue }
-    if ($line -match '^(\[(admins?|administrators?)\]|authorized\s+admin(istrator)?s?\b.*)$') { $mode = 'admins'; continue }   # also accepts the README's own "Authorized Administrators:" line
-    if ($line -match '^(\[users?\]|authorized\s+users?\b.*)$') { $mode = 'users'; continue }
+    # Headers: [admins] / [users], or the README's own "Authorized Administrators:" / "Authorized Users:" lines.
+    # The section title "Authorized Administrators and Users" is not a header.
+    if ($line -match '^(?i)(\[(admins?|administrators?)\]|authorized\s+admin(istrator)?s?\s*:?)$') { $mode = 'admins'; continue }
+    if ($line -match '^(?i)(\[users?\]|authorized\s+users?\s*:?)$') { $mode = 'users'; continue }
+    if ($line -match '^(?i)authorized\s+admin') { continue }
     if ($line -match '^(?i)password') { continue }
+    # READMEs put notes in the list: "saturnalorbit (Hey, that's not...", "(I had to change it again - Ian)".
+    # Keep the name before any comment; skip lines that cannot be an account name.
     $name = ($line -replace '\(you\)', '').Trim()
+    if ($name -match '^[\(\[]') { continue }
+    $name = ($name -split '\s*[\(\[]', 2)[0].Trim()
     if (-not $name) { continue }
+    if ($name -match '["/\\\[\]:;|=,+*?<>]' -or ($name -split '\s+').Count -gt 3) {
+        Write-Host "Line '$line' does not look like an account name - ignored" -ForegroundColor Yellow; continue
+    }
     if ($mode -eq 'admins') { $admins.Add($name) } elseif ($mode -eq 'users') { $users.Add($name) }
     else { Write-Host "Line '$line' is above any [admins]/[users] header - ignored" -ForegroundColor Yellow }
 }
@@ -67,6 +78,18 @@ Write-Host "README: $($admins.Count) admins, $($users.Count) standard users" -Fo
 if ($admins.Count -eq 0) { Write-Host 'No [admins] section found - stopping so nobody gets demoted by mistake.' -ForegroundColor Red; exit 1 }
 
 function In-List([string]$n, $list) { return @($list | Where-Object { $_ -ieq $n }).Count -gt 0 }
+# Safety net: an account named anywhere in the README text is never offered for deletion, even if parsing missed it.
+# A README name that is missing, and an extra account that shares a name part with it (stanley.stevenson vs
+# mr.stevenson), may be one person renamed. Report both and let a human decide instead of delete + create.
+function Get-LookAlike([string]$acct, [string]$display, $missing) {
+    foreach ($n in $missing) {
+        foreach ($t in @($n -split '[._\- ]' | Where-Object { $_.Length -ge 4 })) {
+            if ($acct -match [regex]::Escape($t) -or $display -match [regex]::Escape($t)) { return $n }
+        }
+    }
+    return $null
+}
+function In-ReadmeText([string]$n) { return $listText -match ('(?im)(^|[\s,])' + [regex]::Escape($n) + '($|[\s,(\[])') }
 function Ask([string]$q) {
     if (-not $Apply) { return $false }
     $a = Read-Host "$q [y/N]"
@@ -97,9 +120,13 @@ if (-not $isDC) {
     catch { Write-Host 'Get-LocalGroupMember failed (orphaned SID in Administrators?). Check with: net localgroup Administrators' -ForegroundColor Yellow }
 
     Write-Host "`n--- Users on this machine that are NOT in the README" -ForegroundColor Cyan
+    $missingNames = @($authorized | Where-Object { $n = $_; -not ($local | Where-Object { $_.Name -ieq $n }) })
     foreach ($u in $local) {
         if ($u.SID.Value -match $skipRid -or $u.SID.Value -eq $meSid) { continue }
         if (-not (In-List $u.Name $authorized)) {
+            $la = Get-LookAlike $u.Name $u.FullName $missingNames
+            if ($la) { Write-Host "[?] $($u.Name) may be README user '$la' under another name - check before deleting or creating anyone" -ForegroundColor Yellow; continue }
+            if (In-ReadmeText $u.Name) { Write-Host "[?] $($u.Name) is not in the parsed lists but its name is in the README text - check by hand (not offered for deletion)" -ForegroundColor Yellow; continue }
             Write-Host "[!] $($u.Name)  (enabled: $($u.Enabled))" -ForegroundColor Red
             if (Ask "    Delete local user '$($u.Name)'?") { Remove-LocalUser -SID $u.SID; [void]$deleted.Add($u.SID.Value); Write-Host '    deleted' -ForegroundColor Green; $changes++ }
         }
@@ -108,6 +135,8 @@ if (-not $isDC) {
     Write-Host "`n--- README users missing from this machine" -ForegroundColor Cyan
     foreach ($n in $authorized) {
         if (-not ($local | Where-Object { $_.Name -ieq $n })) {
+            $twin = $local | Where-Object { -not (In-List $_.Name $authorized) -and (Get-LookAlike $_.Name $_.FullName @($n)) } | Select-Object -First 1
+            if ($twin) { Write-Host "[?] $n does not exist, but '$($twin.Name)' looks like the same person - decide by hand" -ForegroundColor Yellow; continue }
             Write-Host "[?] $n does not exist (README sometimes asks you to create users)" -ForegroundColor Yellow
             if (Ask "    Create '$n' with a random password (saved to Desktop)?") {
                 $pw = New-StrongPassword
@@ -178,9 +207,14 @@ else {
     $adminGroups = 'Administrators','Domain Admins','Enterprise Admins','Schema Admins'
 
     Write-Host "`n--- AD users NOT in the README" -ForegroundColor Cyan
+    $missingNames = @($authorized | Where-Object { $n = $_; -not ($adUsers | Where-Object { $_.SamAccountName -ieq $n }) })
     foreach ($u in $adUsers) {
         if ($u.SID.Value -match $skipRid -or $u.SID.Value -eq $meSid -or $u.SamAccountName -ieq $me) { continue }
         if (-not (In-List $u.SamAccountName $authorized)) {
+            $la = Get-LookAlike $u.SamAccountName $u.Name $missingNames
+            if ($la) { Write-Host "[?] $($u.SamAccountName) ($($u.Name)) may be README user '$la' under another logon name - check before deleting or creating anyone" -ForegroundColor Yellow; continue }
+            if (In-ReadmeText $u.SamAccountName) { Write-Host "[?] $($u.SamAccountName) is not in the parsed lists but its name is in the README text - check by hand (not offered for deletion)" -ForegroundColor Yellow; continue }
+            if ($u.SamAccountName.EndsWith('$')) { Write-Host "[?] $($u.SamAccountName) ends in `$ - a trust account or a user disguised as one. Check in dsa.msc (Advanced Features) before deleting." -ForegroundColor Yellow; continue }
             Write-Host "[!] $($u.SamAccountName)  ($($u.Name), enabled: $($u.Enabled))" -ForegroundColor Red
             if (Ask "    Delete AD user '$($u.SamAccountName)'?") { Remove-ADUser -Identity $u -Confirm:$false; [void]$deleted.Add($u.SID.Value); Write-Host '    deleted' -ForegroundColor Green; $changes++ }
         }
@@ -189,6 +223,8 @@ else {
     Write-Host "`n--- README users missing from AD" -ForegroundColor Cyan
     foreach ($n in $authorized) {
         if (-not ($adUsers | Where-Object { $_.SamAccountName -ieq $n })) {
+            $twin = $adUsers | Where-Object { -not (In-List $_.SamAccountName $authorized) -and (Get-LookAlike $_.SamAccountName $_.Name @($n)) } | Select-Object -First 1
+            if ($twin) { Write-Host "[?] $n does not exist in AD, but '$($twin.SamAccountName)' ($($twin.Name)) looks like the same person - decide by hand" -ForegroundColor Yellow; continue }
             Write-Host "[?] $n does not exist in AD" -ForegroundColor Yellow
             if (Ask "    Create AD user '$n' with a random password (saved to Desktop)?") {
                 $pw = New-StrongPassword
