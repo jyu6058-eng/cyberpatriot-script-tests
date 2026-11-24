@@ -82,6 +82,7 @@ $detect = @(
     ,@('exclusion-whole-drive','Whole-drive Defender exclusion','Defender excludes the whole C:\\ drive',$false,'b')
     ,@('task-ms-powershell','Task hidden under \Microsoft\ running PowerShell','\\Microsoft\\Windows\\Maintenance\\SysCheck .*powershell',$false,'b')
     ,@('task-wininit','Task that starts wininit.exe','MicrosoftEdgeUpdateTaskUserUA .*never start a core Windows process',$false,'b')
+    ,@('mpssvc-depends-sense','Firewall service given a dependency that never starts','MpsSvc depends on .*Sense',$true,'b')
     ,@('fw-public-allow','Firewall Public allows unmatched inbound','Public profile ALLOWS inbound connections',$true,'b')
     ,@('hidden-anydesk','Hidden AnyDesk on the Desktop','Hidden item that looks like a tool or game: .*AnyDesk\.exe',$false,'f')
     ,@('driver-mimidrv','Driver file in a user folder','Driver file outside Windows: C:\\Users\\Public\\mimidrv\.sys',$false,'f')
