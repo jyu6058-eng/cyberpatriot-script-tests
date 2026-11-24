@@ -28,9 +28,38 @@ $bugcheck = Get-WinEvent -FilterHashtable @{ LogName = 'System'; Id = 1001; Prov
 foreach ($b in $bugcheck) { Log "  earlier BLUE SCREEN: $($b.TimeCreated) $($b.Message -replace '\s+', ' ' | Select-Object -First 1)" }
 
 $sysDesk = [Environment]::GetFolderPath('Desktop')
-New-Item -ItemType Directory -Path $sysDesk -Force | Out-Null
+if (-not $sysDesk -or -not (Test-Path $sysDesk)) { $sysDesk = Join-Path $env:PUBLIC 'Desktop' }   # same fallback the scripts use as SYSTEM
 $empty = Join-Path $base 'empty.txt'
 if (-not (Test-Path $empty)) { Set-Content -Path $empty -Value '' }
+
+# In a real round the README user is logged in, so their registry hive (HKCU) is loaded and both the
+# scoring engine and Audit can see per-user settings. Nobody logs in here, so load that hive by hand.
+$script:hiveSid = $null
+function Mount-UserHive {
+    $u = if (Test-Path "$base\mainuser.txt") { (Get-Content "$base\mainuser.txt" -Raw).Trim() } else { '' }
+    if (-not $u) { Log 'main user unknown - per-user registry not loaded'; return }
+    $prof = Get-ChildItem 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList' |
+        ForEach-Object { [pscustomobject]@{ Sid = $_.PSChildName; Path = [string]$_.GetValue('ProfileImagePath') } } |
+        Where-Object { $_.Path -and (Split-Path $_.Path -Leaf) -match ('^' + [regex]::Escape($u) + '(\..*)?$') } | Select-Object -First 1
+    if (-not $prof) { Log "no profile folder for '$u' - per-user registry not loaded"; return }
+    if (Test-Path "Registry::HKEY_USERS\$($prof.Sid)") { Log "registry hive of $u already loaded"; return }
+    $r = & reg.exe load "HKU\$($prof.Sid)" "$($prof.Path)\NTUSER.DAT" 2>&1
+    Log "loaded registry hive of $u ($($prof.Sid)) from $($prof.Path): exit $LASTEXITCODE $r"
+    if ($LASTEXITCODE -eq 0) { $script:hiveSid = $prof.Sid }
+}
+function Dismount-UserHive {
+    if (-not $script:hiveSid) { return }
+    [gc]::Collect(); [gc]::WaitForPendingFinalizers(); Start-Sleep 2
+    $r = & reg.exe unload "HKU\$script:hiveSid" 2>&1
+    Log "unloaded user hive: exit $LASTEXITCODE $r"
+}
+
+function Save-ScmErrors([string]$tag) {
+    $ev = Get-WinEvent -FilterHashtable @{ LogName = 'System'; ProviderName = 'Service Control Manager'; Level = 2; StartTime = $os.LastBootUpTime } -ErrorAction SilentlyContinue
+    $ev | ForEach-Object { '{0:HH:mm:ss} {1} {2}' -f $_.TimeCreated, $_.Id, ($_.Message -replace '\s+', ' ') } | Set-Content "$out\scm-errors-$tag.txt"
+    Log "service start errors since boot: $(@($ev).Count)"
+    $ev | Where-Object { $_.Message -match '(?i)firewall|defender|mpssvc|bfe' } | Select-Object -First 3 | ForEach-Object { Log ("  SCM {0}: {1}" -f $_.Id, ($_.Message -replace '\s+', ' ')) }
+}
 
 function Wait-Ready {
     $t0 = Get-Date
@@ -91,13 +120,20 @@ function Run-Script([string]$tag, [string]$script, [string]$scriptArgs, [int]$mi
         Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
     }
     Log ('{0} finished in {1:n1} min, exit code {2}' -f $tag, ((Get-Date) - $t0).TotalMinutes, $p.ExitCode)
+    # Child PowerShell writes its streams to stderr as CLIXML; keep only the real errors.
+    $raw = Get-Content "$out\$tag.err.txt" -Raw -ErrorAction SilentlyContinue
+    if ($raw -and $raw.StartsWith('#< CLIXML')) {
+        $errs = [regex]::Matches($raw, '<S S="Error">(.*?)</S>') | ForEach-Object { $_.Groups[1].Value -replace '_x000D_', '' -replace '_x000A_', ' ' }
+        Set-Content "$out\$tag.err.txt" ($errs -join "`r`n")
+    }
     Get-Content "$out\$tag.err.txt" -ErrorAction SilentlyContinue | Where-Object { $_ -match '\S' } | Select-Object -First 3 | ForEach-Object { Log "  stderr: $_" }
     Select-String -Path "$out\$tag.console.txt" -Pattern 'DONE:|README:' -ErrorAction SilentlyContinue | Select-Object -Last 2 | ForEach-Object { Log "  $($_.Line.Trim())" }
 }
 
 function Save-Audit([string]$name) {
-    $r = Get-ChildItem $sysDesk -Filter 'CP-Audit-*.txt' | Sort-Object LastWriteTime | Select-Object -Last 1
+    $r = Get-ChildItem $sysDesk, "$env:PUBLIC\Desktop", "$env:SystemRoot\System32" -Filter 'CP-Audit-*.txt' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime | Select-Object -Last 1
     if ($r) { Move-Item $r.FullName "$out\$name.txt" -Force; Log "saved $name.txt" }
+    else { Copy-Item "$out\$name.console.txt" "$out\$name.txt" -ErrorAction SilentlyContinue; Log "report file not found - using the console output as $name.txt" }
 }
 
 function Save-Services([string]$tag) {
@@ -125,7 +161,9 @@ if ($idx -ge $steps.Count) { Log 'state says finished; removing hook'; & sc.exe 
 if ($tries -ge 2) { Log "step $($steps[$idx].n) was interrupted twice - skipping it"; $idx++; $tries = 0 }
 if ($idx -gt 0 -and $tries -gt 0) { Log "resuming: step $($steps[$idx].n) was interrupted (crash or reboot), retrying" }
 
+Mount-UserHive
 Wait-Ready
+Save-ScmErrors ("boot{0:HHmm}" -f $os.LastBootUpTime)
 $script:rebooting = $false; $script:finished = $false
 while ($idx -lt $steps.Count) {
     $s = $steps[$idx]
@@ -134,7 +172,8 @@ while ($idx -lt $steps.Count) {
     & $s.a
     $idx++; $tries = 0
     Set-Content -Path $state -Value "$idx 0"
-    if ($script:rebooting) { Restart-Computer -Force; exit }
+    if ($script:rebooting) { Dismount-UserHive; Restart-Computer -Force; exit }
 }
+Dismount-UserHive
 Log 'ALL DONE - powering off'
 Stop-Computer -Force

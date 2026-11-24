@@ -180,6 +180,7 @@ if sw:
     say(f"OS: {val(h, cv, 'ProductName')} | {val(h, cv, 'EditionID')} | build {val(h, cv, 'CurrentBuild')}.{val(h, cv, 'UBR')} | {val(h, cv, 'DisplayVersion')}")
     say(f"Registered owner: {val(h, cv, 'RegisteredOwner')}")
     wl = path_node(h, r'Microsoft\Windows NT\CurrentVersion\Winlogon')
+    default_user = val(h, wl, 'DefaultUserName') or ''
     say(f"Winlogon: DefaultUserName={val(h, wl, 'DefaultUserName')} DefaultDomainName={val(h, wl, 'DefaultDomainName')} AutoAdminLogon={val(h, wl, 'AutoAdminLogon')} DefaultPassword={'SET' if val(h, wl, 'DefaultPassword') else 'none'}")
     progs = set()
     for base in (r'Microsoft\Windows\CurrentVersion\Uninstall', r'WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall'):
@@ -330,6 +331,11 @@ if userlist:
     open(os.path.join(dst, 'users.txt'), 'w', encoding='utf-8-sig').write(userlist.replace('\n', '\r\n'))
 if readme_text:
     open(os.path.join(dst, 'readme.txt'), 'w', encoding='utf-8-sig').write(readme_text.replace('\n', '\r\n'))
+m = re.search(r'(?im)^\s*([^\s(][^(\n]*?)\s*\(you\)', readme_text or '')
+main_user = m.group(1).strip() if m else (default_user if sw else '')
+say(f'Main user (logged-in account in a real round): {main_user or "unknown"}')
+if main_user:
+    open(os.path.join(dst, 'mainuser.txt'), 'w', encoding='utf-8').write(main_user)
 
 # initial copies of score reports (as shipped)
 sdir = os.path.join(OUT, 'score-shipped')

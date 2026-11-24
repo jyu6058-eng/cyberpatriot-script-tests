@@ -41,11 +41,12 @@ if cand:
             shutil.copy2(p, os.path.join(dst, f'{i:02d}_{os.path.basename(p)}'))
 
 # Harden backup folder (secedit export, auditpol, reg exports, harden-log.txt)
-sp = ci('Windows/System32/config/systemprofile/Desktop')
-if sp:
-    for n in os.listdir(sp):
-        if n.startswith('CP-Backup-'):
-            shutil.copytree(os.path.join(sp, n), os.path.join(OUT, 'harden-backup'), dirs_exist_ok=True)
+for d in ('Windows/System32/config/systemprofile/Desktop', 'Users/Public/Desktop', 'Windows/System32'):
+    sp = ci(d)
+    if sp:
+        for n in os.listdir(sp):
+            if n.startswith('CP-Backup-') and os.path.isdir(os.path.join(sp, n)):
+                shutil.copytree(os.path.join(sp, n), os.path.join(OUT, 'harden-backup', n), dirs_exist_ok=True)
 
 # If nothing ran, keep the System event log for diagnosis.
 if not g:

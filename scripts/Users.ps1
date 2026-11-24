@@ -84,7 +84,9 @@ $changes = 0
 $deleted = New-Object 'System.Collections.Generic.HashSet[string]'   # SIDs deleted in this run
 $created = New-Object 'System.Collections.Generic.List[string]'      # names created in this run
 $listFailed = $false
-$pwFile = Join-Path ([Environment]::GetFolderPath('Desktop')) ("CP-new-passwords-{0}.txt" -f (Get-Date -Format 'yyyyMMdd-HHmmss'))
+$deskDir = [Environment]::GetFolderPath('Desktop')
+if (-not $deskDir -or -not (Test-Path $deskDir)) { $deskDir = Join-Path $env:PUBLIC 'Desktop' }   # e.g. running as SYSTEM
+$pwFile = Join-Path $deskDir ("CP-new-passwords-{0}.txt" -f (Get-Date -Format 'yyyyMMdd-HHmmss'))
 
 if (-not $isDC) {
     # ============================================================ LOCAL ACCOUNTS
@@ -225,6 +227,10 @@ else {
     }
 
     Write-Host "`n--- Authorized users that are disabled" -ForegroundColor Cyan
+    $disAuth = @($adUsers | Where-Object { -not $_.Enabled -and $_.SID.Value -notmatch $skipRid -and (In-List $_.SamAccountName $authorized) })
+    if ($authorized.Count -gt 3 -and $disAuth.Count -gt $authorized.Count / 2) {
+        Write-Host "    $($disAuth.Count) of $($authorized.Count) README users are disabled. That is usually how the image was built (accounts made without passwords), not a vulnerability. Enable only the ones the README says must work." -ForegroundColor Yellow
+    }
     foreach ($u in $adUsers | Where-Object { -not $_.Enabled -and $_.SID.Value -notmatch $skipRid }) {
         if (In-List $u.SamAccountName $authorized) {
             Write-Host "[?] $($u.SamAccountName) is disabled" -ForegroundColor Yellow

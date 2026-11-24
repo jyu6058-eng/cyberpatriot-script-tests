@@ -48,6 +48,7 @@ $meSid       = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 $meName      = $env:USERNAME
 $stamp       = Get-Date -Format 'yyyyMMdd-HHmmss'
 $desktop     = [Environment]::GetFolderPath('Desktop')
+if (-not $desktop -or -not (Test-Path $desktop)) { $desktop = Join-Path $env:PUBLIC 'Desktop' }   # e.g. running as SYSTEM
 $backup      = Join-Path $desktop "CP-Backup-$stamp"
 $log         = New-Object System.Collections.Generic.List[string]
 
@@ -105,12 +106,64 @@ if (-not $DryRun) {
 # ------------------------------------------------------------------ 1. account policy + user rights
 Step 'Account policy (password + lockout) and dangerous user rights'
 if ($isDC) {
-    Say '  DOMAIN CONTROLLER: local secpol does not control the domain password policy.' 'Yellow'
-    Say '  Open gpmc.msc > Forest > Domains > <domain> > Default Domain Policy > Edit >' 'Yellow'
-    Say '    Computer Configuration > Policies > Windows Settings > Security Settings > Account Policies' 'Yellow'
-    Say '    (Password Policy, Account Lockout Policy, Kerberos Policy)' 'Yellow'
-    Say '  User Rights on a DC live in Default Domain Controllers Policy > ... > Local Policies > User Rights Assignment.' 'Yellow'
-    Say '  Then run: gpupdate /force   (values to use are in the checklist)' 'Yellow'
+    # The domain's password/lockout/Kerberos policy comes from the Default Domain Policy GPO: its GptTmpl.inf in SYSVOL.
+    # Edit that file, then raise the GPO version in BOTH GPT.INI and the AD object, or the change is never applied.
+    $ddp = '{31B2F340-016D-11D2-945F-00C04FB984F9}'
+    $want = [ordered]@{
+        'System Access'   = [ordered]@{ MinimumPasswordAge = 1; MaximumPasswordAge = 60; MinimumPasswordLength = 14; PasswordComplexity = 1; PasswordHistorySize = 24; ClearTextPassword = 0; LockoutBadCount = 10; ResetLockoutCount = 30; LockoutDuration = 30 }
+        'Kerberos Policy' = [ordered]@{ MaxTicketAge = 10; MaxRenewAge = 7; MaxServiceAge = 600; MaxClockSkew = 5; TicketValidateClient = 1 }
+    }
+    try {
+        Import-Module ActiveDirectory -ErrorAction Stop
+        $domObj = Get-ADDomain -ErrorAction Stop
+        $gpoDN  = "CN=$ddp,CN=Policies,CN=System,$($domObj.DistinguishedName)"
+        $gpoAD  = Get-ADObject -Identity $gpoDN -Properties versionNumber -ErrorAction Stop
+        $sysvol = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\Netlogon\Parameters' -ErrorAction Stop).SysVol
+        $gpoDir = Join-Path $sysvol "$($domObj.DNSRoot)\Policies\$ddp"
+        $tmpl   = Join-Path $gpoDir 'MACHINE\Microsoft\Windows NT\SecEdit\GptTmpl.inf'
+        $gptIni = Join-Path $gpoDir 'GPT.INI'
+        if (-not (Test-Path $tmpl)) { throw "not found: $tmpl" }
+        $text  = [IO.File]::ReadAllText($tmpl)          # usually UTF-16 with a BOM; ReadAllText detects it
+        $lines = New-Object System.Collections.Generic.List[string]
+        $text -split "`r?`n" | ForEach-Object { $lines.Add($_) }
+        $changed = @()
+        foreach ($sec in $want.Keys) {
+            $hdr = -1; for ($i = 0; $i -lt $lines.Count; $i++) { if ($lines[$i].Trim() -ieq "[$sec]") { $hdr = $i; break } }
+            if ($hdr -lt 0) { $lines.Add("[$sec]"); $hdr = $lines.Count - 1 }
+            $end = $lines.Count; for ($i = $hdr + 1; $i -lt $lines.Count; $i++) { if ($lines[$i].Trim().StartsWith('[')) { $end = $i; break } }
+            foreach ($k in $want[$sec].Keys) {
+                $v = $want[$sec][$k]; $found = $false
+                for ($i = $hdr + 1; $i -lt $end; $i++) {
+                    if ($lines[$i] -match "^\s*$k\s*=\s*(.*)$") {
+                        $found = $true
+                        if ($Matches[1].Trim() -ne "$v") { $changed += "$k $($Matches[1].Trim()) -> $v"; $lines[$i] = "$k = $v" }
+                        break
+                    }
+                }
+                if (-not $found) { $lines.Insert($end, "$k = $v"); $end++; $changed += "$k (not set) -> $v" }
+            }
+        }
+        if ($changed.Count -eq 0) { Say '  Default Domain Policy already has the recommended password, lockout and Kerberos values' 'Green' }
+        elseif ($DryRun) { foreach ($c in $changed) { Say "  would set Default Domain Policy $c" 'Yellow' } }
+        else {
+            Copy-Item $tmpl (Join-Path $backup 'DefaultDomainPolicy-GptTmpl.inf') -Force
+            Copy-Item $gptIni (Join-Path $backup 'DefaultDomainPolicy-GPT.INI') -Force
+            [IO.File]::WriteAllText($tmpl, ($lines -join "`r`n"), [Text.Encoding]::Unicode)
+            $ini = [IO.File]::ReadAllText($gptIni)
+            $fileVer = if ($ini -match '(?im)^\s*Version\s*=\s*(\d+)') { [int]$Matches[1] } else { 0 }
+            $newVer = [Math]::Max($fileVer, [int]$gpoAD.versionNumber) + 1      # +1 = computer-side version
+            if ($ini -match '(?im)^\s*Version\s*=') { $ini = [regex]::Replace($ini, '(?im)^(\s*Version\s*=\s*)\d+', "`${1}$newVer") } else { $ini = $ini.TrimEnd() + "`r`nVersion=$newVer`r`n" }
+            [IO.File]::WriteAllText($gptIni, $ini, [Text.Encoding]::ASCII)
+            Set-ADObject -Identity $gpoDN -Replace @{ versionNumber = $newVer } -ErrorAction Stop
+            foreach ($c in $changed) { Say "  Default Domain Policy: $c" 'Green' }
+            Say "  GPO version $fileVer -> $newVer (GPT.INI and AD). gpupdate /force at the end applies it; check with: net accounts" 'Green'
+        }
+    } catch {
+        Say "  FAILED to edit the Default Domain Policy automatically: $($_.Exception.Message)" 'Red'
+        Say '  Do it by hand: gpmc.msc > Default Domain Policy > Edit > Computer Configuration > Policies > Windows Settings >' 'Yellow'
+        Say '    Security Settings > Account Policies (Password Policy, Account Lockout Policy, Kerberos Policy), then gpupdate /force' 'Yellow'
+    }
+    Say '  User Rights on a DC live in Default Domain Controllers Policy > ... > Local Policies > User Rights Assignment (not changed here).' 'Yellow'
 } else {
     $delegation = ''   # workstations and member servers: nobody
     $inf = @"
@@ -265,6 +318,15 @@ foreach ($n in 'DisableRealtimeMonitoring','DisableBehaviorMonitoring','DisableO
 # Policy that makes Defender ignore (6) or take no action (9) on threats of a given alert level
 $tsda = Get-Item -LiteralPath "$dp\Threats\ThreatSeverityDefaultAction" -ErrorAction SilentlyContinue
 if ($tsda) { foreach ($lvl in $tsda.GetValueNames()) { if ([string]$tsda.GetValue($lvl) -in '6','9') { Remove-RegValue "$dp\Threats\ThreatSeverityDefaultAction" $lvl } } }
+# Settings below need the Defender service running (error 0x800106ba otherwise), so start it first.
+$wd = Get-Service WinDefend -ErrorAction SilentlyContinue
+if ($wd -and $wd.Status -ne 'Running' -and -not $DryRun) {
+    Run 'start the Defender service' { Start-Service WinDefend -ErrorAction Stop }
+    for ($i = 0; $i -lt 30 -and -not (Get-MpComputerStatus -ErrorAction SilentlyContinue); $i++) { Start-Sleep 2 }
+}
+if (-not $DryRun -and -not (Get-MpComputerStatus -ErrorAction SilentlyContinue)) {
+    Say '  Defender is not answering yet. REBOOT, then run Harden.ps1 again to finish the Defender settings (ASR, cloud, PUA).' 'Red'
+}
 $mpp = Get-MpPreference -ErrorAction SilentlyContinue
 foreach ($lv in 'Severe','High','Moderate','Low') {
     if ($mpp -and $mpp."${lv}ThreatDefaultAction" -in 6, 9) {
@@ -297,7 +359,6 @@ $asr = [ordered]@{
 Run "enable $($asr.Count) Attack Surface Reduction rules in Block mode" {
     Add-MpPreference -AttackSurfaceReductionRules_Ids @($asr.Keys) -AttackSurfaceReductionRules_Actions @($asr.Keys | ForEach-Object { 'Enabled' }) -ErrorAction Stop
 }
-Run 'start the Defender service if stopped' { if ((Get-Service WinDefend).Status -ne 'Running') { Start-Service WinDefend -ErrorAction Stop } }
 $ex = Get-MpPreference
 if ($ex.ExclusionPath -or $ex.ExclusionProcess -or $ex.ExclusionExtension) {
     Say "  Defender exclusions NOT removed automatically - review them: $((@($ex.ExclusionPath) + @($ex.ExclusionProcess) + @($ex.ExclusionExtension) | Where-Object { $_ }) -join '; ')" 'Yellow'

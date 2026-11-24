@@ -68,6 +68,7 @@ $isDC        = ($productType -eq 2)
 $me          = [Security.Principal.WindowsIdentity]::GetCurrent()
 $stamp       = Get-Date -Format 'yyyyMMdd-HHmmss'
 $desktop     = [Environment]::GetFolderPath('Desktop')
+if (-not $desktop -or -not (Test-Path $desktop)) { $desktop = Join-Path $env:PUBLIC 'Desktop' }   # e.g. running as SYSTEM
 $reportPath  = Join-Path $desktop "CP-Audit-$stamp.txt"
 
 Section 'SYSTEM'
@@ -442,6 +443,9 @@ foreach ($n in 'ExclusionPath','ExclusionProcess','ExclusionExtension','Exclusio
     if ($pref.$n) { Check "Defender $n : $($pref.$n -join '; ')   (remove unless it is the scoring engine, e.g. C:\aeacus on some practice images)" }
 }
 foreach ($x in @($pref.ExclusionPath) | Where-Object { $_ -match '^[A-Za-z]:\\?$' }) { Flag "Defender excludes the whole $x drive" }
+foreach ($x in @(@($pref.ExclusionPath) + @($pref.ExclusionProcess)) | Where-Object { $_ -match '(?i)\.(exe|dll|ps1|bat|cmd|vbs|js|scr|sys)$' -and $_ -notmatch '(?i)\\aeacus\\' } | Select-Object -Unique) {
+    Flag "Defender excludes one specific program: $x  (malware often whitelists itself - look at that file)"
+}
 $defPol = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender'
 foreach ($n in 'DisableAntiSpyware','DisableAntiVirus') { if ((Get-RegValue $defPol $n) -eq 1) { Flag "Policy $n = 1 (Defender disabled by policy)" } }
 foreach ($n in 'DisableRealtimeMonitoring','DisableBehaviorMonitoring','DisableOnAccessProtection','DisableScanOnRealtimeEnable','DisableIOAVProtection','DisableScriptScanning') {
@@ -614,7 +618,16 @@ if ($isDC) { $mustRun += 'NTDS','ADWS','Kdc','Netlogon','LanmanServer','LanmanWo
 foreach ($n in $mustRun) {
     $s = Get-Service $n
     if (-not $s) { if ($n -ne 'WinDefend') { Flag "Service $n is missing" } else { Check 'Defender service (WinDefend) not present' }; continue }
-    if ($s.StartType -eq 'Disabled' -or $s.Status -ne 'Running') { Flag ("{0,-18} {1} / {2}  <- should be running{3}" -f $n, $s.Status, $s.StartType, $(if ($isDC -and $n -in 'NTDS','ADWS','Kdc','Netlogon','DNS','DFSR') {' (Active Directory needs it)'} else {''})) }
+    if ($s.StartType -eq 'Disabled' -or $s.Status -ne 'Running') {
+        Flag ("{0,-18} {1} / {2}  <- should be running{3}" -f $n, $s.Status, $s.StartType, $(if ($isDC -and $n -in 'NTDS','ADWS','Kdc','Netlogon','DNS','DFSR') {' (Active Directory needs it)'} else {''}))
+        # The Service Control Manager logs why a start failed (7000/7001/7023/7024); show the latest one for this service.
+        $why = Get-WinEvent -FilterHashtable @{ LogName = 'System'; ProviderName = 'Service Control Manager'; Id = 7000, 7001, 7003, 7023, 7024 } -MaxEvents 300 -ErrorAction SilentlyContinue |
+            Where-Object { $_.Message -match [regex]::Escape($s.DisplayName) } | Select-Object -First 1
+        if ($why) { Info ("        last start error ({0:g}): {1}" -f $why.TimeCreated, ($why.Message -replace '\s+', ' ')) }
+        foreach ($dep in @($s.ServicesDependedOn)) { if ($dep.Status -ne 'Running') { Info "        depends on $($dep.Name), which is $($dep.Status) / $($dep.StartType)" } }
+        $img = Get-RegValue "HKLM:\SYSTEM\CurrentControlSet\Services\$n" 'ImagePath'
+        Info "        ImagePath: $img"
+    }
 }
 if ($isDC) { $sp = Get-Service Spooler; if ($sp -and $sp.Status -eq 'Running') { Flag 'Print Spooler is running on a domain controller (PrintNightmare). Disable it unless the README needs printing.' } }
 foreach ($n in 'wuauserv','W32Time','BITS','CryptSvc','LanmanWorkstation') { $s = Get-Service $n; if ($s -and $s.StartType -eq 'Disabled') { Flag "$n is Disabled (should not be)" } }
@@ -709,7 +722,18 @@ foreach ($ck in $cplKeys) {
 if (-not $cplFound) { Info '    none' }
 Info 'Startup folders:'
 $startup = @("$env:ProgramData\Microsoft\Windows\Start Menu\Programs\Startup") + (Get-ChildItem 'C:\Users' -Directory | ForEach-Object { "$($_.FullName)\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup" })
-foreach ($sf in $startup) { Get-ChildItem $sf -File -Force | Where-Object { $_.Name -ne 'desktop.ini' } | ForEach-Object { Check $_.FullName } }
+$wsh = New-Object -ComObject WScript.Shell
+foreach ($sf in $startup) {
+    Get-ChildItem $sf -File -Force | Where-Object { $_.Name -ne 'desktop.ini' } | ForEach-Object {
+        if ($_.Extension -eq '.lnk') {
+            $lnk = $wsh.CreateShortcut($_.FullName)
+            $tgt = "$($lnk.TargetPath) $($lnk.Arguments)".Trim()
+            if ($lnk.TargetPath -match '(?i)\\(cmd|powershell|pwsh|mshta|wscript|cscript|rundll32|regsvr32)\.exe$' -or ($lnk.TargetPath -match '(?i)^C:\\Windows\\' -and $lnk.TargetPath -and (Test-Path $lnk.TargetPath) -and (Get-AuthenticodeSignature $lnk.TargetPath).Status -ne 'Valid')) {
+                Flag "$($_.FullName) -> $tgt"
+            } else { Check "$($_.FullName) -> $tgt" }
+        } else { Check $_.FullName }
+    }
+}
 
 Out-Line ''
 Info 'Scheduled tasks outside \Microsoft\ (with what they run):'
