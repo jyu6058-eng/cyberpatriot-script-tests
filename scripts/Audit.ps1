@@ -747,7 +747,10 @@ foreach ($sf in $startup) {
         if ($_.Extension -eq '.lnk') {
             $lnk = $wsh.CreateShortcut($_.FullName)
             $tgt = "$($lnk.TargetPath) $($lnk.Arguments)".Trim()
-            if ($lnk.TargetPath -match '(?i)\\(cmd|powershell|pwsh|mshta|wscript|cscript|rundll32|regsvr32)\.exe$' -or ($lnk.TargetPath -match '(?i)^C:\\Windows\\' -and $lnk.TargetPath -and (Test-Path $lnk.TargetPath) -and (Get-AuthenticodeSignature $lnk.TargetPath).Status -ne 'Valid')) {
+            $tp = [string]$lnk.TargetPath
+            $excluded = @(@($pref.ExclusionPath) + @($pref.ExclusionProcess) | Where-Object { $_ -and $tp -and $tp -ieq $_ }).Count -gt 0
+            $unsignedWin = $tp -match '(?i)^C:\\Windows\\' -and ((-not (Test-Path -LiteralPath $tp)) -or (Get-AuthenticodeSignature -LiteralPath $tp).Status -ne 'Valid')
+            if ($excluded -or $unsignedWin -or $tp -match '(?i)\\(cmd|powershell|pwsh|mshta|wscript|cscript|rundll32|regsvr32)\.exe$') {
                 Flag "$($_.FullName) -> $tgt"
             } else { Check "$($_.FullName) -> $tgt" }
         } else { Check $_.FullName }
@@ -773,6 +776,8 @@ foreach ($t in $allTasks | Where-Object { $_.TaskPath -like '\Microsoft\*' }) {
     foreach ($a in @($t.Actions | Where-Object { $_.Execute })) {
         $exe = [Environment]::ExpandEnvironmentVariables($a.Execute).Trim('"')
         # rundll32/cscript are left out on purpose: several built-in tasks use them (Autochk Proxy, SystemRestore SR, CleanupOldPerfLogs).
+        # Built-in tasks that run a .cmd from System32 through cmd (Software Inventory Logging: silcollector.cmd) are normal too.
+        if ($exe -match '(?i)(^|\\)cmd(\.exe)?$' -and $a.Arguments -match '(?i)^(/d\s+)?/c\s+(%systemroot%|%windir%|C:\\Windows)\\system32\\[\w-]+\.cmd(\s+\w+)*\s*$') { continue }
         if ($exe -match '(?i)(^|\\)(powershell|pwsh|cmd|mshta|wscript|bitsadmin|certutil)(\.exe)?$' -or $exe -match $coreRx -or
             $a.Arguments -match '(?i)\.ps1\b|-enc(odedcommand)?\b|\s-e\s|frombase64string|downloadstring|downloadfile|\biex\b|invoke-expression|invoke-webrequest') {
             Flag ("{0}{1}  [{2}]  -> {3} {4}" -f $t.TaskPath, $t.TaskName, $t.State, $a.Execute, $a.Arguments); $msFound = $true

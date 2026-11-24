@@ -594,7 +594,8 @@ if (-not $isDC) {
     if (-not $SkipUserFlags) {
         foreach ($u in Get-ADUser -Filter * -Properties PasswordNotRequired, DoesNotRequirePreAuth, AllowReversiblePasswordEncryption, PasswordNeverExpires, ServicePrincipalName) {
             if ($u.SamAccountName -eq 'krbtgt') { continue }
-            if ($u.PasswordNotRequired)               { Run "AD $($u.SamAccountName): require a password"           { Set-ADUser $u -PasswordNotRequired $false -ErrorAction Stop } }
+            if ($u.PasswordNotRequired)               { Run "AD $($u.SamAccountName): require a password"           { Set-ADUser $u -PasswordNotRequired $false -ErrorAction Stop
+                                                            if ((Get-ADUser $u -Properties PasswordNotRequired).PasswordNotRequired) { throw 'still set after the change - the account probably has a blank password; give it a strong password, then try again' } } }
             if ($u.DoesNotRequirePreAuth)             { Run "AD $($u.SamAccountName): require Kerberos pre-auth"    { Set-ADAccountControl $u -DoesNotRequirePreAuth $false -ErrorAction Stop } }
             if ($u.AllowReversiblePasswordEncryption) { Run "AD $($u.SamAccountName): no reversible encryption"     { Set-ADUser $u -AllowReversiblePasswordEncryption $false -ErrorAction Stop } }
             if ($u.PasswordNeverExpires -and -not $u.ServicePrincipalName) { Run "AD $($u.SamAccountName): password expires" { Set-ADUser $u -PasswordNeverExpires $false -ErrorAction Stop } }
