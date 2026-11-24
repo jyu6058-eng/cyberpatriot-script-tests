@@ -429,7 +429,17 @@ $mps = Get-Service MpsSvc
 if ($mps -and $mps.Status -ne 'Running') { Flag "The firewall service (MpsSvc) is $($mps.Status) / $($mps.StartType) - the firewall is not filtering anything, whatever the profiles say" }
 $mpsDep = @((Get-Item 'HKLM:\SYSTEM\CurrentControlSet\Services\MpsSvc').GetValue('DependOnService', $null)) | Where-Object { $_ }
 if (@($mpsDep | Where-Object { $_ -notin 'mpsdrv', 'bfe', 'nsi' }).Count) { Flag "MpsSvc depends on $($mpsDep -join ', ') (Windows uses mpsdrv, bfe, nsi). A planted dependency that never starts keeps the firewall off. Fix HKLM\SYSTEM\CurrentControlSet\Services\MpsSvc\DependOnService in regedit (sc.exe config is denied for this service), then reboot." }
-foreach ($p in Get-NetFirewallProfile) {
+$fwProfiles = @(Get-NetFirewallProfile -ErrorAction SilentlyContinue)
+if (-not $fwProfiles.Count) {
+    # The cmdlets need the firewall service; with it stopped, read the stored profile settings instead.
+    Info '    (firewall cmdlets unavailable while MpsSvc is stopped - reading the stored profile settings from the registry)'
+    $fwp = 'HKLM:\SYSTEM\CurrentControlSet\Services\SharedAccess\Parameters\FirewallPolicy'
+    $fwProfiles = foreach ($pn in @(@('Domain','DomainProfile'), @('Private','StandardProfile'), @('Public','PublicProfile'))) {
+        $en = Get-RegValue "$fwp\$($pn[1])" 'EnableFirewall'; $ib = Get-RegValue "$fwp\$($pn[1])" 'DefaultInboundAction'
+        [pscustomobject]@{ Name = $pn[0]; Enabled = ($en -ne 0); DefaultInboundAction = $(if ($ib -eq 0) { 'Allow' } else { 'Block' }) }
+    }
+}
+foreach ($p in $fwProfiles) {
     if ($p.Enabled -eq 'True' -or $p.Enabled -eq $true) { Good "Firewall $($p.Name) profile enabled (inbound default: $($p.DefaultInboundAction))" } else { Flag "Firewall $($p.Name) profile is OFF" }
     if ([string]$p.DefaultInboundAction -eq 'Allow') { Flag "Firewall $($p.Name) profile ALLOWS inbound connections that match no rule (should be Block)" }
 }
@@ -441,7 +451,7 @@ foreach ($pp in 'DomainProfile','PrivateProfile','PublicProfile') {
     if ($v -eq 0) { Flag "Group Policy turns the firewall OFF for $pp (HKLM\SOFTWARE\Policies\Microsoft\WindowsFirewall\$pp EnableFirewall=0)" }
 }
 Info 'Enabled inbound ALLOW rules that are not built-in Windows groups (review against README):'
-Get-NetFirewallRule -Direction Inbound -Enabled True -Action Allow | Where-Object { -not $_.Group -or $_.Group -notlike '@*' } |
+Get-NetFirewallRule -Direction Inbound -Enabled True -Action Allow -ErrorAction SilentlyContinue | Where-Object { -not $_.Group -or $_.Group -notlike '@*' } |
     Select-Object -First 40 DisplayName, Profile, @{n='Program';e={($_ | Get-NetFirewallApplicationFilter).Program}}, @{n='Port';e={($_ | Get-NetFirewallPortFilter).LocalPort}} |
     ForEach-Object { Check ("{0,-45} {1,-18} port {2,-10} {3}" -f $_.DisplayName, $_.Profile, ($_.Port -join ','), $_.Program) }
 
