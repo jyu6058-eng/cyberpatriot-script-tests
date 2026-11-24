@@ -158,6 +158,13 @@ Plant 'asr-one-disabled' {
 }
 Plant 'exclusion-whole-drive' { Add-MpPreference -ExclusionPath 'C:\' }
 Plant 'root-file' { Set-Content 'C:\passwords.txt' 'admin:Summer2024!' }
+# ---------- a fake scoring engine (aeacus-style) must be reported as "leave it alone", never [!]
+Plant 'engine-aeacus' {
+    New-Item -ItemType Directory -Force 'C:\aeacus' | Out-Null
+    Copy-Item "$env:windir\System32\PING.EXE" 'C:\aeacus\phocus.exe' -Force
+    sc.exe create CSSClient binPath= 'C:\aeacus\phocus.exe' start= demand | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "sc create exit $LASTEXITCODE" }
+}
 # ---------- found on the Troy Windows 10 Mock answer key
 Plant 'svc-swapped' {
     New-Item -ItemType Directory -Force 'C:\Windows\Globalization\Sorting' | Out-Null

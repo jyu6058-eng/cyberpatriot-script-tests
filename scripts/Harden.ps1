@@ -55,7 +55,9 @@ $log         = New-Object System.Collections.Generic.List[string]
 function Say([string]$t, [string]$c = 'Gray') { Write-Host $t -ForegroundColor $c; $log.Add($t) }
 function Step([string]$t) { Say ''; Say "== $t" 'Cyan' }
 
+$script:Desired = @{}   # HKLM values Harden wants; on a DC, domain GPOs that set them differently are fixed too
 function Set-Reg([string]$Path, [string]$Name, $Value, [string]$Type = 'DWord') {
+    if ($Path -like 'HKLM:\*') { $script:Desired[(($Path -replace '^HKLM:\\', 'MACHINE\') + '\' + $Name).ToLower()] = @($Value, $Type, "$Path\$Name") }
     $old = $null
     $k = Get-Item -LiteralPath $Path -ErrorAction SilentlyContinue
     if ($k) { $old = $k.GetValue($Name, $null) }
@@ -581,6 +583,52 @@ if (-not $isDC) {
             elseif ($u.PasswordNeverExpires) { Say "  AD $($u.SamAccountName) has an SPN (service account?) - left PasswordNeverExpires alone, decide yourself" 'Yellow' }
         }
     }
+}
+
+if ($isDC) {
+    # On a DC, a security option that a domain GPO also defines (GptTmpl.inf [Registry Values]) is put back at the
+    # next refresh - e.g. Default Domain Controllers Policy sets LDAP server signing to 1. Make those GPOs agree.
+    Step 'Domain GPOs that would undo these settings'
+    try {
+        $domObj = Get-ADDomain -ErrorAction Stop
+        $sysvol = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\Netlogon\Parameters' -ErrorAction Stop).SysVol
+        $typeCode = @{ DWord = '4'; String = '1'; ExpandString = '2'; MultiString = '7' }
+        foreach ($gdir in Get-ChildItem (Join-Path $sysvol "$($domObj.DNSRoot)\Policies") -Directory -ErrorAction Stop) {
+            $tmpl = Join-Path $gdir.FullName 'MACHINE\Microsoft\Windows NT\SecEdit\GptTmpl.inf'
+            if (-not (Test-Path $tmpl)) { continue }
+            $lines = @([IO.File]::ReadAllText($tmpl) -split "`r?`n")
+            $inReg = $false; $fixed = @()
+            for ($i = 0; $i -lt $lines.Count; $i++) {
+                $l = $lines[$i].Trim()
+                if ($l.StartsWith('[')) { $inReg = ($l -ieq '[Registry Values]'); continue }
+                if (-not $inReg -or $l -notmatch '^([^=]+)=(\d+),(.*)$') { continue }
+                $key = $Matches[1].Trim().ToLower(); $gType = $Matches[2]; $gData = $Matches[3].Trim('"')
+                if (-not $script:Desired.ContainsKey($key)) { continue }
+                $want = $script:Desired[$key]
+                $wantData = [string]$want[0]
+                if ($gData -eq $wantData) { continue }
+                $code = if ($typeCode.ContainsKey($want[1])) { $typeCode[$want[1]] } else { $gType }
+                $dataOut = if ($code -eq '1' -or $code -eq '2') { '"' + $wantData + '"' } else { $wantData }
+                $fixed += "$($want[2]): GPO had $gData, now $wantData"
+                $lines[$i] = "$($Matches[1].Trim())=$code,$dataOut"
+            }
+            if ($fixed.Count -eq 0) { continue }
+            $gname = try { (Get-GPO -Guid $gdir.Name.Trim('{}') -ErrorAction Stop).DisplayName } catch { $gdir.Name }
+            if ($DryRun) { foreach ($f in $fixed) { Say "  would change GPO '$gname': $f" 'Yellow' }; continue }
+            Copy-Item $tmpl (Join-Path $backup "GptTmpl-$($gdir.Name).inf") -Force
+            [IO.File]::WriteAllText($tmpl, ($lines -join "`r`n"), [Text.Encoding]::Unicode)
+            $gptIni = Join-Path $gdir.FullName 'GPT.INI'
+            $gpoDN = "CN=$($gdir.Name),CN=Policies,CN=System,$($domObj.DistinguishedName)"
+            $adVer = [int](Get-ADObject -Identity $gpoDN -Properties versionNumber -ErrorAction Stop).versionNumber
+            $ini = [IO.File]::ReadAllText($gptIni)
+            $fileVer = if ($ini -match '(?im)^\s*Version\s*=\s*(\d+)') { [int]$Matches[1] } else { 0 }
+            $newVer = [Math]::Max($fileVer, $adVer) + 1
+            $ini = [regex]::Replace($ini, '(?im)^(\s*Version\s*=\s*)\d+', "`${1}$newVer")
+            [IO.File]::WriteAllText($gptIni, $ini, [Text.Encoding]::ASCII)
+            Set-ADObject -Identity $gpoDN -Replace @{ versionNumber = $newVer } -ErrorAction Stop
+            foreach ($f in $fixed) { Say "  GPO '$gname': $f" 'Green' }
+        }
+    } catch { Say "  FAILED to check domain GPOs: $($_.Exception.Message) - check Default Domain Controllers Policy > Security Options by hand" 'Red' }
 }
 
 # ------------------------------------------------------------------ done

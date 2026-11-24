@@ -58,6 +58,10 @@ function Get-RegValue([string]$path, [string]$name) {
     return $null
 }
 
+# The CyberPatriot scoring client and community engines (aeacus) look like malware to a scanner. Never touch them.
+$engineRx = '(?i)\\(aeacus|CyberPatriot|CCS)\\|\\(phocus|CCSClient)\.exe'
+function Is-Engine([string]$p) { return ($p -match $engineRx) }
+
 # ---------------------------------------------------------------- preflight
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if (-not $isAdmin) { Write-Host 'Run this from an ELEVATED PowerShell (Run as administrator).' -ForegroundColor Red; exit 1 }
@@ -589,7 +593,8 @@ foreach ($s in $svcs) {
     if (-not $p) { continue }
     $exe = if ($p -match '^"?([^"]+?\.(exe|com|bat|cmd))') { $Matches[1] } elseif ($p.StartsWith('"')) { $p.Split('"')[1] } else { $p.Split(' ')[0] }
     if ($exe -notmatch '^(?i)(C:\\Windows\\|C:\\Program Files|C:\\ProgramData\\Microsoft\\Windows Defender)' -and $exe -notmatch '^(?i)\\SystemRoot\\|^system32\\') {
-        Flag ("{0,-22} {1,-8} {2}" -f $s.Name, $s.State, $p)
+        if (Is-Engine $p) { Info ("    {0,-22} {1,-8} {2}   <- scoring engine: leave it alone" -f $s.Name, $s.State, $p) }
+        else { Flag ("{0,-22} {1,-8} {2}" -f $s.Name, $s.State, $p) }
     }
     if (-not $p.StartsWith('"') -and $p -match '^[A-Za-z]:\\[^"]* [^"]*\.exe' -and $p -notmatch '^(?i)C:\\Windows\\') {
         Check "Unquoted service path with a space: $($s.Name) -> $p"
@@ -819,6 +824,7 @@ foreach ($p in $procs) {
 }
 $procPaths = $procs | Where-Object { $_.ExecutablePath } | Select-Object -ExpandProperty ExecutablePath -Unique
 foreach ($x in $procPaths) {
+    if (Is-Engine $x) { continue }
     $sig = Get-AuthenticodeSignature -LiteralPath $x
     if ($sig.Status -ne 'Valid') {
         if ($x -match '^(?i)C:\\Windows\\') { Flag "Running from Windows folder but not validly signed ($($sig.Status)): $x" } else { Check "Running, not validly signed ($($sig.Status)): $x" }
@@ -936,6 +942,7 @@ Section 'PERMISSIONS (who can write where they should not)'
 $okId    = '^(NT AUTHORITY\\SYSTEM|BUILTIN\\Administrators|NT SERVICE\\TrustedInstaller|CREATOR OWNER|APPLICATION PACKAGE AUTHORITY\\.*|.*\\Domain Admins|.*\\Enterprise Admins)$'
 $writeRx = 'FullControl|Modify|Write|ChangePermissions|TakeOwnership|^268435456$|^1073741824$'
 function Show-WriteAces([string]$path, [string]$skipRx) {
+    if (Is-Engine $path) { return }
     $acl = Get-Acl -LiteralPath $path -ErrorAction SilentlyContinue
     if (-not $acl) { return }
     foreach ($ace in $acl.Access) {

@@ -100,6 +100,10 @@ $detect = @(
     ,@('ads','Alternate data stream','ADS .*notes\.txt:hidden',$false,'f')
 )
 Rec 'No false positive' 'lsass-hosted services (EFS, KeyIso, VaultSvc) not flagged as swapped' (-not (Has $before 'Service (EFS|KeyIso|VaultSvc) has a ServiceDll'))
+if (Planted 'engine-aeacus') {
+    Rec 'No false positive' 'Scoring engine service reported as leave-alone' (Has $before 'CSSClient .*scoring engine: leave it alone')
+    Rec 'No false positive' 'Scoring engine never gets [!]' (-not (Has $before '^\[!\].*(phocus|CSSClient)'))
+}
 foreach ($d in $detect) {
     $key, $desc, $rx, $fixed, $src = $d
     if (-not (Planted $key)) { Rec 'Audit detects' $desc $null "not planted ($key)"; continue }
