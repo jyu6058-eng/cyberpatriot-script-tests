@@ -562,7 +562,7 @@ if ($rdpOff -eq 0) {
     $tsp = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
     if ((Get-RegValue $tsp 'fEncryptRPCTraffic') -ne 1) { Check 'RDP: "Require secure RPC communication" is not enabled (Terminal Services\fEncryptRPCTraffic)' }
     if ((Get-RegValue $tsp 'MinEncryptionLevel') -lt 3) { Check 'RDP: client connection encryption level is not High (Terminal Services\MinEncryptionLevel = 3)' }
-} else { Info 'Remote Desktop is off' }
+} else { Check 'Remote Desktop is OFF. If the README lists RDP as a critical service, turn it on (System Properties > Remote). Harden.ps1 applies the secure RDP settings either way.' }
 $tsPol = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
 if ((Get-RegValue $tsPol 'UserAuthentication') -eq 0) { Flag 'Group Policy turns OFF RDP Network Level Authentication (Terminal Services\UserAuthentication = 0)' }
 if ((Get-RegValue $tsPol 'fDenyTSConnections') -eq 0) { Check 'Group Policy forces Remote Desktop ON (Terminal Services\fDenyTSConnections = 0)' }

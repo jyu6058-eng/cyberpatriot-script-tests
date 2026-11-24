@@ -46,6 +46,13 @@ df -h / | tail -1 | tee -a "$OUT/host.log"
 cd "$W"
 log "downloading $TITLE ($EXPECT_SIZE bytes)"
 t0=$(date +%s)
+# A plain (non-ranged) request shows Drive's quota page when the file has been
+# downloaded too often; ranged requests can still return 206, so they are not
+# a valid availability check. Stop after one request instead of hammering it.
+head_bytes=$(curl -sSL --max-time 60 "$(url "$DRIVE_ID")" 2>/dev/null | head -c 2048 | tr -d '\0' || true)
+if printf '%s' "$head_bytes" | grep -qiE 'quota exceeded|too many users|<!DOCTYPE html'; then
+    die "Google Drive refused the download (Quota exceeded: too many downloads of this file recently). Try again later."
+fi
 ok=0
 for try in 1 2 3; do
     aria2c -q -x 8 -s 8 -k 64M --file-allocation=none --max-tries=8 --retry-wait=10 \

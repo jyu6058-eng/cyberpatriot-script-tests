@@ -418,28 +418,26 @@ Run 'disable SMBv1 on the SMB server, require signing, encrypt SMB traffic' { Se
 $mrx = (Get-Item -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Services\mrxsmb20' -ErrorAction SilentlyContinue)
 if ($mrx -and $mrx.GetValue('Start', $null) -eq 4) { Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Services\mrxsmb20' 'Start' 2; Say '  SMBv2/3 client driver was disabled (a past 5-point penalty) - re-enabled, reboot needed' 'Yellow' }
 
-# ------------------------------------------------------------------ 9. RDP (secure it only if it is on)
+# ------------------------------------------------------------------ 9. RDP (never turned on or off here; always secured)
 Step 'Remote Desktop'
+# The secure settings are applied whether RDP is on or off: they change nothing until RDP is used, and images score
+# them even with RDP off (PPTH: "RDP SSL security", "Require secure RPC"). Turning RDP on or off is the README's call.
 $ts = 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server'
-if ((Get-ItemProperty -LiteralPath $ts -ErrorAction SilentlyContinue).fDenyTSConnections -eq 0) {
-    Say '  RDP is ON - leaving it on (README decides). Securing it:'
-    Set-Reg "$ts\WinStations\RDP-Tcp" 'UserAuthentication' 1   # Network Level Authentication
-    Set-Reg "$ts\WinStations\RDP-Tcp" 'SecurityLayer' 2        # TLS
-    Set-Reg "$ts\WinStations\RDP-Tcp" 'MinEncryptionLevel' 3   # High
-    $tsp = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
-    Set-Reg $tsp 'DisablePasswordSaving' 1   # do not allow passwords to be saved
-    Set-Reg $tsp 'fPromptForPassword' 1      # always prompt for password on connection
-    Set-Reg $tsp 'fDisableCdm' 1             # no drive redirection
-    Set-Reg $tsp 'fEncryptRPCTraffic' 1
-    Set-Reg $tsp 'MinEncryptionLevel' 3      # High (policy copy, so a planted policy cannot lower it)
-    Set-Reg $tsp 'UserAuthentication' 1      # NLA (policy copy)
-    Set-Reg $tsp 'SecurityLayer' 2
-    Say '  Also decide who may use RDP: Remote Desktop Users group / "Allow log on through Remote Desktop Services".' 'Yellow'
-} else {
-    Say '  RDP is off - not touching it. If the README says RDP is required, turn it on in System Properties > Remote and run this again.'
-    $tspKey = Get-Item -LiteralPath 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services' -ErrorAction SilentlyContinue
-    if ($tspKey -and $tspKey.GetValue('UserAuthentication', $null) -eq 0) { Set-Reg 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services' 'UserAuthentication' 1 }
-}
+$rdpOn = ((Get-ItemProperty -LiteralPath $ts -ErrorAction SilentlyContinue).fDenyTSConnections -eq 0)
+if ($rdpOn) { Say '  RDP is ON - leaving it on (README decides). Securing it:' }
+else        { Say '  RDP is OFF - leaving it off. If the README lists RDP, turn it on in System Properties > Remote. Applying the secure settings anyway:' 'Yellow' }
+Set-Reg "$ts\WinStations\RDP-Tcp" 'UserAuthentication' 1   # Network Level Authentication
+Set-Reg "$ts\WinStations\RDP-Tcp" 'SecurityLayer' 2        # TLS
+Set-Reg "$ts\WinStations\RDP-Tcp" 'MinEncryptionLevel' 3   # High
+$tsp = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
+Set-Reg $tsp 'DisablePasswordSaving' 1   # do not allow passwords to be saved
+Set-Reg $tsp 'fPromptForPassword' 1      # always prompt for password on connection
+Set-Reg $tsp 'fDisableCdm' 1             # no drive redirection
+Set-Reg $tsp 'fEncryptRPCTraffic' 1
+Set-Reg $tsp 'MinEncryptionLevel' 3      # High (policy copy, so a planted policy cannot lower it)
+Set-Reg $tsp 'UserAuthentication' 1      # NLA (policy copy)
+Set-Reg $tsp 'SecurityLayer' 2
+if ($rdpOn) { Say '  Also decide who may use RDP: Remote Desktop Users group / "Allow log on through Remote Desktop Services".' 'Yellow' }
 
 # ------------------------------------------------------------------ 10. updates
 Step 'Windows Update'
