@@ -597,7 +597,7 @@ foreach ($s in $svcs) {
     $p = [string]$s.PathName
     if (-not $p) { continue }
     $sdll = Get-RegValue "HKLM:\SYSTEM\CurrentControlSet\Services\$($s.Name)\Parameters" 'ServiceDll'
-    if ($sdll -and $p -notmatch '(?i)\\svchost\.exe') { Flag "Service $($s.Name) has a ServiceDll (normally runs in svchost) but runs: $p" }
+    if ($sdll -and $p -notmatch '(?i)\\(svchost|lsass)\.exe') { Flag "Service $($s.Name) has a ServiceDll (normally runs in svchost) but runs: $p" }   # EFS, KeyIso, Netlogon, VaultSvc run in lsass
     $exe = if ($p -match '^"?([^"]+?\.(exe|com|bat|cmd))') { $Matches[1] } else { $p.Split(' ')[0] }
     if ($exe -match '^(?i)C:\\Windows\\' -and $exe -notmatch '^(?i)C:\\Windows\\(System32|SysWOW64|Microsoft\.NET|servicing|ADWS|WinSxS|PSSDNSvc|vss|CCM|ccmsetup|SystemApps|ImmersiveControlPanel|explorer\.exe)') {
         Check "Service $($s.Name) runs from an unusual Windows folder: $p"

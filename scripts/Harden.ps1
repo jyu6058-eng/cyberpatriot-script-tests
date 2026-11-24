@@ -397,6 +397,16 @@ if ($isDC) {
     if ($c -and -not $c.EnablePollutionProtection) { Run 'turn on DNS cache pollution protection' { Set-DnsServerCache -PollutionProtection $true -ErrorAction Stop } }
 }
 
+# ------------------------------------------------------------------ 12a. boot options
+# Kernel debugging / test signing / no integrity checks let unsigned or attacker drivers load. Off is the Windows default.
+Step 'Boot options'
+$bcd = bcdedit /enum '{current}' 2>$null
+foreach ($bk in 'debug','bootdebug','testsigning','nointegritychecks') {
+    if ($bcd | Select-String -Pattern "^\s*$bk\s+Yes") {
+        Run "boot option $bk -> off (reboot needed)" { bcdedit /set '{current}' $bk off | Out-Null; if ($LASTEXITCODE -ne 0) { throw "bcdedit exit $LASTEXITCODE" } }
+    }
+}
+
 # ------------------------------------------------------------------ 12b. exploit protection (opt-in)
 if ($ExploitProtection) {
     Step 'Exploit protection and DEP'

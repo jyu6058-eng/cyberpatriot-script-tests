@@ -87,7 +87,7 @@ $detect = @(
     ,@('sehop-off','SEHOP disabled','SEHOP on .*= 1',$true,'b')
     ,@('smb-autodisconnect','SMB idle disconnect too long','idle minutes before disconnecting a session\s+= 120',$true,'b')
     ,@('null-session-fallback','NULL session fallback allowed','NULL session fallback = off\s+= 1',$true,'b')
-    ,@('boot-testsigning','Test signing on',"Boot option 'testsigning' is ON",$false,'b')
+    ,@('boot-testsigning','Test signing on',"Boot option 'testsigning' is ON",$true,'b')
     ,@('defender-ignore-severe','Policy ignores severe threats','Policy tells Defender to IGNORE severe threats',$true,'b')
     ,@('defender-ignore-severe','High threats default action Allow','Defender default action for High threats = Allow',$true,'b')
     ,@('defender-script-scan-policy','Script scanning off by policy','Policy Real-Time Protection\\DisableScriptScanning = 1',$true,'b')
@@ -99,6 +99,7 @@ $detect = @(
     ,@('media-mp3','Media file','song\.mp3',$false,'f')
     ,@('ads','Alternate data stream','ADS .*notes\.txt:hidden',$false,'f')
 )
+Rec 'No false positive' 'lsass-hosted services (EFS, KeyIso, VaultSvc) not flagged as swapped' (-not (Has $before 'Service (EFS|KeyIso|VaultSvc) has a ServiceDll'))
 foreach ($d in $detect) {
     $key, $desc, $rx, $fixed, $src = $d
     if (-not (Planted $key)) { Rec 'Audit detects' $desc $null "not planted ($key)"; continue }
