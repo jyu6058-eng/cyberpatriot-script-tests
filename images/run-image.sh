@@ -130,7 +130,8 @@ mount_win() {   # $1 partition, $2 ro|rw
     sudo ntfsfix -d "$src" >> "$OUT/host.log" 2>&1
     sudo mount -t ntfs-3g -o rw,remove_hiberfile "$src" /mnt/w
 }
-umount_win() { sudo umount /mnt/w 2>/dev/null; if mountpoint -q /mnt/bl 2>/dev/null; then sudo umount /mnt/bl; fi; }
+# The dislocker FUSE mount belongs to root, so check and unmount it as root (a plain `mountpoint` cannot see it).
+umount_win() { sudo umount /mnt/w 2>/dev/null; sudo umount /mnt/bl 2>/dev/null; sleep 1; true; }
 BITLOCKER=0
 WINPART=""; WINDISK=""
 for j in $(seq 0 $((NDISK-1))); do
