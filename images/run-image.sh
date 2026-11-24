@@ -196,11 +196,27 @@ log "booting (nic=$NIC mem=${MEMQ}M firmware=${FW:-bios}); limit ${VM_MINUTES} m
 qemu-system-x86_64 "${QARGS[@]}" > "$OUT/qemu.log" 2>&1 &
 QPID=$!
 start=$(date +%s); n=0; seen=0; done_at=0
+last_shot_hash=""; same_since=0; resets=0
 mon() { echo "$1" | socat - "UNIX-CONNECT:$W/mon.sock" >/dev/null 2>&1; }
 while kill -0 "$QPID" 2>/dev/null; do
     sleep 30; n=$((n+1))
     el=$(( $(date +%s) - start ))
-    if (( n % 2 == 0 )); then mon "screendump $OUT/shots/$(printf '%03d' $((el/60))).png -f png"; fi
+    if (( n % 2 == 0 )); then
+        shot="$OUT/shots/$(printf '%03d' $((el/60))).png"
+        mon "screendump $shot -f png"; sleep 2
+        # Freeze watchdog: the lock screen's clock changes every minute, so a non-blank screen that stays
+        # identical for 15 minutes means Windows hung (seen once on Beyond Journey's End before any script ran).
+        # A blank display (screen turned off, PNG of a few KB) is normal and never counts.
+        if [ -s "$shot" ]; then
+            h=$(md5sum < "$shot" | cut -c1-32); sz=$(stat -c %s "$shot")
+            if [ "$h" != "$last_shot_hash" ] || (( sz < 20000 )); then
+                last_shot_hash=$h; same_since=$el
+            elif (( el - same_since >= 900 && resets < 2 )); then
+                log "screen unchanged for $(( (el - same_since) / 60 )) min and not blank: guest looks frozen; resetting the VM (the guest steps resume after a reboot)"
+                mon system_reset; resets=$((resets+1)); same_since=$el; last_shot_hash=""
+            fi
+        fi
+    fi
     if [ -f "$OUT/serial.log" ]; then
         total=$(wc -l < "$OUT/serial.log")
         if (( total > seen )); then sed -n "$((seen+1)),${total}p" "$OUT/serial.log" | tr -d '\r' | sed 's/^/  guest: /'; seen=$total; fi
