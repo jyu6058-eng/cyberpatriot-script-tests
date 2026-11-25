@@ -62,6 +62,8 @@ function Get-RegValue([string]$path, [string]$name) {
 $mimiRx = '(?i)mimikatz|mimidrv|mimilib|gentilkiwi|benjamin delpy'   # survives renaming: it is in the file's version info
 $engineRx = '(?i)\\(aeacus|CyberPatriot|CCS)\\|\\(phocus|CCSClient)\.exe|\\Scoring\\Magistrate\\|\\Magistrate(\.Windows|HUD)\.exe'   # aeacus, the official client, Magistrate
 function Is-Engine([string]$p) { return ($p -match $engineRx) }
+# One failing check must not cost the whole report (a broken image can make almost any command throw).
+trap { Out-Line "[?] One check stopped with an error and was skipped: $($_.Exception.Message)" 'Yellow'; continue }
 $engineUserRx = '^(?i)(magistrate|aeacus|cyberpatriot|ccsclient)$'   # accounts a scoring engine runs as (Mushroom Kingdom: AD user MAGISTRATE)
 
 # ---------------------------------------------------------------- preflight
@@ -827,12 +829,18 @@ foreach ($s in Get-Service) {
 Section 'MALWARE + PERSISTENCE'
 Info 'Accessibility-binary backdoors (sticky keys etc.):'
 $ref = @{}
-foreach ($r in 'System32\cmd.exe','System32\WindowsPowerShell\v1.0\powershell.exe','explorer.exe','System32\taskmgr.exe') { $h = (Get-FileHash "$env:windir\$r").Hash; if ($h) { $ref[$h] = $r } }
+# Test-Path first: in Windows PowerShell 5.1 Get-FileHash throws a terminating error for a missing file, and a
+# "broken" image can delete these (My Little Pony deletes cmd.exe; SysWOW64 still has a 32-bit copy).
+foreach ($r in 'System32\cmd.exe','SysWOW64\cmd.exe','System32\WindowsPowerShell\v1.0\powershell.exe','explorer.exe','System32\taskmgr.exe') {
+    $rp = "$env:windir\$r"
+    if (-not (Test-Path -LiteralPath $rp)) { continue }
+    try { $h = (Get-FileHash -LiteralPath $rp -ErrorAction Stop).Hash; if ($h) { $ref[$h] = $r } } catch {}
+}
 foreach ($b in 'sethc.exe','utilman.exe','osk.exe','Magnify.exe','Narrator.exe','DisplaySwitch.exe','AtBroker.exe','EaseOfAccessDialog.exe') {
     $path = "$env:windir\System32\$b"
     if (-not (Test-Path $path)) { continue }
-    $h = (Get-FileHash $path).Hash
-    if ($ref.ContainsKey($h)) { Flag "$b is really $($ref[$h]) - BACKDOOR" }
+    $h = $null; try { $h = (Get-FileHash -LiteralPath $path -ErrorAction Stop).Hash } catch {}
+    if ($h -and $ref.ContainsKey($h)) { Flag "$b is really $($ref[$h]) - BACKDOOR" }
     $sig = Get-AuthenticodeSignature $path
     if ($sig.Status -ne 'Valid') { Flag "$b signature status: $($sig.Status)" }
 }
