@@ -73,6 +73,9 @@ $detect = @(
     ,@('dns-weak','DNS non-secure dynamic updates','Zone cp\.test allows NON-secure dynamic updates',$false,'b')
     ,@('dns-weak','DNS cache pollution protection off','DNS cache pollution protection is OFF',$true,'b')
     ,@('autologon','AutoAdminLogon on','AutoAdminLogon = 1',$true,'b')
+    ,@('svc-psexec-style','PsExec/Impacket-style service','Service ffUx runs an unsigned program straight from C:\\Windows',$false,'b')
+    ,@('dns-plugin-dll','DNS server plugin DLL (DnsAdmins attack)','The DNS server loads a plugin DLL: C:\\Windows\\System32\\mkxproxyloader\.dll',$false,'b')
+    ,@('defender-exclude-ext','Defender ignores every .exe','Defender ignores EVERY \.exe file',$true,'b')
     ,@('forceguest','Guest-only sharing model','sharing and security model = Guest only',$true,'b')
     ,@('safedll-off','Safe DLL search mode off','^\[!\] Safe DLL search mode',$true,'b')
     ,@('pointandprint-nowarn','Point and Print without warning (PrintNightmare)','Point and Print: no warning or elevation on install',$true,'b')
@@ -116,6 +119,7 @@ $detect = @(
     ,@('ads','Alternate data stream','ADS .*notes\.txt:hidden',$false,'f')
 )
 Rec 'No false positive' 'lsass-hosted services (EFS, KeyIso, VaultSvc) not flagged as swapped' (-not (Has $before 'Service (EFS|KeyIso|VaultSvc) has a ServiceDll'))
+if (Planted 'engine-magistrate') { Rec 'No false positive' 'Magistrate scoring engine never gets [!]' (-not (Has $before '^\[!\].*Magistrate')) }
 if (Planted 'engine-aeacus') {
     Rec 'No false positive' 'Scoring engine service reported as leave-alone' (Has $before 'CSSClient .*scoring engine: leave it alone')
     Rec 'No false positive' 'Scoring engine never gets [!]' (-not (Has $before '^\[!\].*(phocus|CSSClient)'))
@@ -219,6 +223,9 @@ if (Planted 'defender-ignore-severe') {
 }
 if (Planted 'mpssvc-depends-sense') { Rec 'Harden.ps1' 'Planted MpsSvc dependency removed, Windows ones kept' ((@((Get-Item 'HKLM:\SYSTEM\CurrentControlSet\Services\MpsSvc').GetValue('DependOnService')) -notcontains 'Sense') -and (@((Get-Item 'HKLM:\SYSTEM\CurrentControlSet\Services\MpsSvc').GetValue('DependOnService')) -contains 'mpsdrv')) }
 Rec 'No false positive' 'Clean MpsSvc dependencies (mpsdrv, bfe, nsi) not flagged' ((Planted 'mpssvc-depends-sense') -or -not (Has $before 'MpsSvc depends on'))
+Rec 'Harden.ps1' 'SMB compression off (SMBGhost)' ((RegVal 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters' 'DisableCompression') -eq 1)
+if (Get-Service DNS -ErrorAction SilentlyContinue) { Rec 'Harden.ps1' 'SIGRed workaround TcpReceivePacketSize = 0xFF00' ((RegVal 'HKLM:\SYSTEM\CurrentControlSet\Services\DNS\Parameters' 'TcpReceivePacketSize') -eq 0xFF00) }
+if (Planted 'defender-exclude-ext') { Rec 'Harden.ps1' 'Extension exclusion for .exe removed' (@((Get-MpPreference).ExclusionExtension) -notcontains 'exe') "now: $((Get-MpPreference).ExclusionExtension -join ', ')" }
 if (Planted 'defender-script-scan-policy') { Rec 'Harden.ps1' 'DisableScriptScanning policy removed' ($null -eq (RegVal 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection' 'DisableScriptScanning')) }
 if (Planted 'rdp-on') {
     Rec 'Harden.ps1' 'RDP requires secure RPC' ((RegVal 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services' 'fEncryptRPCTraffic') -eq 1)

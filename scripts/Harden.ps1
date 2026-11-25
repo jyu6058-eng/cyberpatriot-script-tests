@@ -166,7 +166,7 @@ if ($isDC) {
         Say '  Do it by hand: gpmc.msc > Default Domain Policy > Edit > Computer Configuration > Policies > Windows Settings >' 'Yellow'
         Say '    Security Settings > Account Policies (Password Policy, Account Lockout Policy, Kerberos Policy), then gpupdate /force' 'Yellow'
     }
-    Say '  User Rights on a DC live in Default Domain Controllers Policy > ... > Local Policies > User Rights Assignment (not changed here).' 'Yellow'
+    Say '  User Rights on a DC live in GPOs (Default Domain Controllers Policy). The "Domain GPOs" step near the end removes Everyone, Users and single users from the dangerous ones.' 'Yellow'
 } else {
     $delegation = ''   # workstations and member servers: nobody
     $inf = @"
@@ -415,9 +415,16 @@ if ($defReady) {
     }
 }
 $ex = Get-MpPreference
+# An extension exclusion for a program or script type makes Defender ignore every such file (KaliPatriot's
+# Windows 10 image excluded .exe). No scoring engine needs one, so these go; path exclusions stay for you to judge.
+foreach ($e in @($ex.ExclusionExtension) | Where-Object { $_ -and $_.TrimStart('.') -match '^(?i)(exe|dll|ps1|psm1|bat|cmd|vbs|vbe|js|jse|wsf|hta|scr|com|msi|sys|cpl|lnk|jar)$' }) {
+    $e2 = $e
+    Run "remove Defender exclusion for every '$e2' file" { Remove-MpPreference -ExclusionExtension $e2 -ErrorAction Stop }
+}
+$ex = Get-MpPreference
 if ($ex.ExclusionPath -or $ex.ExclusionProcess -or $ex.ExclusionExtension) {
-    Say "  Defender exclusions NOT removed automatically - review them: $((@($ex.ExclusionPath) + @($ex.ExclusionProcess) + @($ex.ExclusionExtension) | Where-Object { $_ }) -join '; ')" 'Yellow'
-    Say '  Remove one with: Remove-MpPreference -ExclusionPath "C:\path"' 'Yellow'
+    Say "  Other Defender exclusions NOT removed automatically - review them: $((@($ex.ExclusionPath) + @($ex.ExclusionProcess) + @($ex.ExclusionExtension) | Where-Object { $_ }) -join '; ')" 'Yellow'
+    Say '  Remove one with: Remove-MpPreference -ExclusionPath "C:\path"  (or -ExclusionProcess / -ExclusionExtension)' 'Yellow'
 }
 
 # ------------------------------------------------------------------ 7. system settings that are almost always scored safe
@@ -447,6 +454,7 @@ foreach ($share in '\\*\SYSVOL','\\*\NETLOGON') {
 Step 'SMB (SMBv1 off, signing on; SMBv2/3 left alone)'
 Run 'disable SMBv1 on the SMB server, require signing, encrypt SMB traffic' { Set-SmbServerConfiguration -EnableSMB1Protocol $false -RequireSecuritySignature $true -EnableSecuritySignature $true -EncryptData $true -Force -ErrorAction Stop }
 $mrx = (Get-Item -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Services\mrxsmb20' -ErrorAction SilentlyContinue)
+Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters' 'DisableCompression' 1   # SMBGhost workaround (scored on Mushroom Kingdom)
 if ($mrx -and $mrx.GetValue('Start', $null) -eq 4) { Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Services\mrxsmb20' 'Start' 2; Say '  SMBv2/3 client driver was disabled (a past 5-point penalty) - re-enabled, reboot needed' 'Yellow' }
 
 # ------------------------------------------------------------------ 9. RDP (never turned on or off here; always secured)
@@ -511,6 +519,13 @@ if ($isDC) {
     }
     $c = Get-DnsServerCache -ErrorAction SilentlyContinue
     if ($c -and -not $c.EnablePollutionProtection) { Run 'turn on DNS cache pollution protection' { Set-DnsServerCache -PollutionProtection $true -ErrorAction Stop } }
+}
+if (Get-Service DNS -ErrorAction SilentlyContinue) {
+    Step 'DNS server: SIGRed workaround and plugin DLL'
+    $dnsPar = 'HKLM:\SYSTEM\CurrentControlSet\Services\DNS\Parameters'
+    Set-Reg $dnsPar 'TcpReceivePacketSize' 0xFF00   # CVE-2020-1350 workaround; takes effect when DNS restarts
+    $plugin = (Get-ItemProperty -LiteralPath $dnsPar -ErrorAction SilentlyContinue).ServerLevelPluginDll
+    if ($plugin) { Say "  WARNING: the DNS server loads a plugin DLL: $plugin - the DnsAdmins attack (not removed here; it may be forensics evidence). Remove: Remove-ItemProperty '$dnsPar' ServerLevelPluginDll; Restart-Service DNS" 'Yellow' }
 }
 
 # ------------------------------------------------------------------ 12a. boot options
@@ -647,14 +662,39 @@ if ($isDC) {
         $domObj = Get-ADDomain -ErrorAction Stop
         $sysvol = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\Netlogon\Parameters' -ErrorAction Stop).SysVol
         $typeCode = @{ DWord = '4'; String = '1'; ExpandString = '2'; MultiString = '7' }
+        # User rights on a DC come from GPOs (normally Default Domain Controllers Policy). Mushroom Kingdom planted
+        # Everyone in "Enable ... trusted for delegation" and "Allow log on locally" there. Only these rights are edited.
+        $rightsNobody = 'SeTcbPrivilege', 'SeCreateTokenPrivilege', 'SeTrustedCredManAccessPrivilege', 'SeCreatePermanentPrivilege', 'SeLockMemoryPrivilege', 'SeRelabelPrivilege'
+        $rightsAdmins = 'SeDebugPrivilege', 'SeEnableDelegationPrivilege'
+        $rightsClean  = 'SeInteractiveLogonRight', 'SeRemoteInteractiveLogonRight', 'SeBackupPrivilege', 'SeRestorePrivilege', 'SeTakeOwnershipPrivilege', 'SeLoadDriverPrivilege', 'SeSecurityPrivilege', 'SeSystemEnvironmentPrivilege', 'SeRemoteShutdownPrivilege', 'SeShutdownPrivilege', 'SeSystemtimePrivilege', 'SeManageVolumePrivilege', 'SeSyncAgentPrivilege'
+        $broadRx = '^(S-1-1-0|S-1-5-11|S-1-5-32-545|S-1-5-32-546|S-1-5-7|S-1-5-4|S-1-5-21-[\d-]+-(513|514|515))$'   # Everyone, Authenticated Users, Users, Guests, Anonymous, Interactive, Domain Users/Guests/Computers
+        $userSid = @{}
+        $toSid = { param($t) if ($t.StartsWith('*')) { $t.Substring(1) } else { try { ([Security.Principal.NTAccount]$t).Translate([Security.Principal.SecurityIdentifier]).Value } catch { $null } } }
+        $isUser = { param($sid)
+            if ($sid -notmatch '^S-1-5-21-[\d-]+-(\d+)$' -or [int64]$Matches[1] -lt 1000) { return $false }
+            if (-not $userSid.ContainsKey($sid)) { $userSid[$sid] = $false; try { $null = Get-ADUser -Identity $sid -ErrorAction Stop; $userSid[$sid] = $true } catch {} }
+            $userSid[$sid] }
         foreach ($gdir in Get-ChildItem (Join-Path $sysvol "$($domObj.DNSRoot)\Policies") -Directory -ErrorAction Stop) {
             $tmpl = Join-Path $gdir.FullName 'MACHINE\Microsoft\Windows NT\SecEdit\GptTmpl.inf'
             if (-not (Test-Path $tmpl)) { continue }
             $lines = @([IO.File]::ReadAllText($tmpl) -split "`r?`n")
-            $inReg = $false; $fixed = @()
+            $inReg = $false; $inRights = $false; $fixed = @()
             for ($i = 0; $i -lt $lines.Count; $i++) {
                 $l = $lines[$i].Trim()
-                if ($l.StartsWith('[')) { $inReg = ($l -ieq '[Registry Values]'); continue }
+                if ($l.StartsWith('[')) { $inReg = ($l -ieq '[Registry Values]'); $inRights = ($l -ieq '[Privilege Rights]'); continue }
+                if ($inRights -and $l -match '^(Se\w+)\s*=\s*(.*)$') {
+                    $right = $Matches[1]; $orig = $Matches[2].Trim()
+                    $toks = @($orig -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+                    if ($rightsNobody -contains $right) { $newToks = @() }
+                    elseif ($rightsAdmins -contains $right) { $newToks = @('*S-1-5-32-544') }
+                    elseif ($rightsClean -contains $right) {
+                        $newToks = @($toks | Where-Object { $sid = & $toSid $_; -not ($sid -and $sid -ne $meSid -and ($sid -match $broadRx -or (& $isUser $sid))) })
+                        if ($newToks.Count -eq 0) { $newToks = @('*S-1-5-32-544') }   # never leave a logon right empty
+                    } else { continue }
+                    $newVal = $newToks -join ','
+                    if ($newVal -ne ($toks -join ',')) { $fixed += "user right $($right): '$orig' -> '$(if ($newVal) { $newVal } else { 'nobody' })'"; $lines[$i] = "$right = $newVal".TrimEnd() }
+                    continue
+                }
                 if (-not $inReg -or $l -notmatch '^([^=]+)=(\d+),(.*)$') { continue }
                 $key = $Matches[1].Trim().ToLower(); $gType = $Matches[2]; $gData = $Matches[3].Trim('"')
                 if (-not $script:Desired.ContainsKey($key)) { continue }

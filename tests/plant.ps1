@@ -194,6 +194,18 @@ Plant 'engine-aeacus' {
     sc.exe create CSSClient binPath= 'C:\aeacus\phocus.exe' start= demand | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "sc create exit $LASTEXITCODE" }
 }
+Plant 'engine-magistrate' {
+    New-Item -ItemType Directory -Force 'C:\Scoring\Magistrate' | Out-Null
+    Copy-Item "$env:windir\System32\PING.EXE" 'C:\Scoring\Magistrate\Magistrate.Windows.exe' -Force
+    sc.exe create magistrate binPath= 'C:\Scoring\Magistrate\Magistrate.Windows.exe' start= demand | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "sc create exit $LASTEXITCODE" }
+}
+# ---------- found on Mushroom Kingdom (Magistrate image guide)
+Plant 'svc-psexec-style' {
+    Set-Content -LiteralPath "$env:windir\qWeRtYuI.exe" -Value 'MZ' -Encoding Ascii   # unsigned placeholder, like Impacket's random .exe
+    sc.exe create ffUx binPath= "$env:windir\qWeRtYuI.exe" start= demand | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "sc create exit $LASTEXITCODE" }
+}
 # ---------- found on the Troy Windows 10 Mock answer key
 Plant 'svc-swapped' {
     New-Item -ItemType Directory -Force 'C:\Windows\Globalization\Sorting' | Out-Null
@@ -222,6 +234,7 @@ Plant 'driver-mimidrv' {
 }
 Plant 'rdp-on' { SetReg 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server' 'fDenyTSConnections' 0 }
 # ---------- planted security options (values Windows keeps secure by default) and broken tools
+Plant 'defender-exclude-ext'  { Add-MpPreference -ExclusionExtension 'exe' -ErrorAction Stop }
 Plant 'forceguest'            { SetReg 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' 'ForceGuest' 1 }
 Plant 'safedll-off'           { SetReg 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager' 'SafeDllSearchMode' 0 }
 Plant 'pointandprint-nowarn'  { SetReg 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers\PointAndPrint' 'NoWarningNoElevationOnInstall' 1 }
@@ -273,6 +286,8 @@ Plant 'dns-weak' {
     Set-DnsServerPrimaryZone -Name 'cp.test' -SecureSecondaries TransferAnyServer
     Set-DnsServerCache -PollutionProtection $false
 }
+# Registry only: the running DNS service is not restarted, so it never tries to load this (missing) DLL.
+Plant 'dns-plugin-dll' { if (-not (Get-Service DNS -ErrorAction SilentlyContinue)) { throw 'no DNS service' }; SetReg 'HKLM:\SYSTEM\CurrentControlSet\Services\DNS\Parameters' 'ServerLevelPluginDll' 'C:\Windows\System32\mkxproxyloader.dll' 'String' }
 
 $planted | ConvertTo-Json | Set-Content out\planted.json
 $ok = @($planted.Values | Where-Object { $_ }).Count

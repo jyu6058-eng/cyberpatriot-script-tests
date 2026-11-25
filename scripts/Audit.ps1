@@ -60,7 +60,7 @@ function Get-RegValue([string]$path, [string]$name) {
 
 # The CyberPatriot scoring client and community engines (aeacus) look like malware to a scanner. Never touch them.
 $mimiRx = '(?i)mimikatz|mimidrv|mimilib|gentilkiwi|benjamin delpy'   # survives renaming: it is in the file's version info
-$engineRx = '(?i)\\(aeacus|CyberPatriot|CCS)\\|\\(phocus|CCSClient)\.exe'
+$engineRx = '(?i)\\(aeacus|CyberPatriot|CCS)\\|\\(phocus|CCSClient)\.exe|\\Scoring\\Magistrate\\|\\Magistrate(\.Windows|HUD)\.exe'   # aeacus, the official client, Magistrate
 function Is-Engine([string]$p) { return ($p -match $engineRx) }
 
 # ---------------------------------------------------------------- preflight
@@ -430,6 +430,7 @@ $opts = @(
     ,@('HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\kernel','ObCaseInsensitive',1,'System objects: require case insensitivity')
     ,@('HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager','ProtectionMode',1,'System objects: strengthen default permissions')
     ,@('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Attachments','SaveZoneInformation',2,'Do not preserve zone information = Disabled (keep Mark of the Web)')
+    ,@('HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters','DisableCompression',1,'SMB server compression off (SMBGhost workaround; scored on Mushroom Kingdom)')
 )
 foreach ($o in $opts) {
     $v = Get-RegValue $o[0] $o[1]
@@ -564,7 +565,8 @@ Get-NetFirewallRule -Direction Inbound -Enabled True -Action Allow -ErrorAction 
     Select-Object -First 40 DisplayName, Profile, @{n='Program';e={($_ | Get-NetFirewallApplicationFilter).Program}}, @{n='Port';e={($_ | Get-NetFirewallPortFilter).LocalPort}} |
     ForEach-Object { Check ("{0,-45} {1,-18} port {2,-10} {3}" -f $_.DisplayName, $_.Profile, ($_.Port -join ','), $_.Program) }
 
-$mp = Get-MpComputerStatus
+$mp = $null
+try { $mp = Get-MpComputerStatus -ErrorAction Stop } catch {}
 if ($mp) {
     if ($mp.AntivirusEnabled)          { Good 'Defender antivirus enabled' } else { Flag 'Defender antivirus is DISABLED' }
     if ($mp.RealTimeProtectionEnabled) { Good 'Defender real-time protection on' } else { Flag 'Defender real-time protection is OFF' }
@@ -577,6 +579,10 @@ foreach ($n in 'ExclusionPath','ExclusionProcess','ExclusionExtension','Exclusio
 foreach ($x in @($pref.ExclusionPath) | Where-Object { $_ -match '^[A-Za-z]:\\?$' }) { Flag "Defender excludes the whole $x drive" }
 foreach ($x in @(@($pref.ExclusionPath) + @($pref.ExclusionProcess)) | Where-Object { $_ -match '(?i)\.(exe|dll|ps1|bat|cmd|vbs|js|scr|sys)$' -and $_ -notmatch '(?i)\\aeacus\\' } | Select-Object -Unique) {
     Flag "Defender excludes one specific program: $x  (malware often whitelists itself - look at that file)"
+}
+$riskyExt = '^(?i)(exe|dll|ps1|psm1|bat|cmd|vbs|vbe|js|jse|wsf|hta|scr|com|msi|sys|cpl|lnk|jar)$'
+foreach ($x in @($pref.ExclusionExtension) | Where-Object { $_ -and $_.TrimStart('.') -match $riskyExt } | ForEach-Object { $_.TrimStart('.').ToLower() } | Select-Object -Unique) {
+    Flag "Defender ignores EVERY .$x file (extension exclusion). No scoring engine needs this. Fix: Remove-MpPreference -ExclusionExtension $x (also '.$x' if listed)"
 }
 $defPol = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender'
 foreach ($n in 'DisableAntiSpyware','DisableAntiVirus') { if ((Get-RegValue $defPol $n) -eq 1) { Flag "Policy $n = 1 (Defender disabled by policy)" } }
@@ -737,7 +743,12 @@ foreach ($s in $svcs) {
     if ($sdll -and $p -notmatch '(?i)\\(svchost|lsass)\.exe') { Flag "Service $($s.Name) has a ServiceDll (normally runs in svchost) but runs: $p" }   # EFS, KeyIso, Netlogon, VaultSvc run in lsass
     $exe = if ($p -match '^"?([^"]+?\.(exe|com|bat|cmd))') { $Matches[1] } else { $p.Split(' ')[0] }
     if ($exe -match '^(?i)C:\\Windows\\' -and $exe -notmatch '^(?i)C:\\Windows\\(System32|SysWOW64|Microsoft\.NET|servicing|ADWS|WinSxS|PSSDNSvc|vss|CCM|ccmsetup|SystemApps|ImmersiveControlPanel|explorer\.exe)') {
-        Check "Service $($s.Name) runs from an unusual Windows folder: $p"
+        # PsExec and Impacket's psexec copy a program straight into C:\Windows and run it as a service with a random name
+        $inRoot = $exe -match '^(?i)C:\\Windows\\[^\\]+$'
+        $knownRoot = $exe -match '^(?i)C:\\Windows\\(regedit|HelpPane|notepad|bfsvc|hh|splwow64|winhlp32|write)\.exe$'
+        if ($exe -match '(?i)\\(PSEXESVC|RemComSvc|paexec[^\\]*)\.exe$') { Flag "Service $($s.Name) is a remote-execution service (PsExec/RemCom/PAExec): $p" }
+        elseif ($inRoot -and -not $knownRoot -and (Get-AuthenticodeSignature -FilePath $exe -ErrorAction SilentlyContinue).Status -ne 'Valid') { Flag "Service $($s.Name) runs an unsigned program straight from C:\Windows: $p  (how PsExec/Impacket leave a backdoor service: random service name, random .exe)" }
+        else { Check "Service $($s.Name) runs from an unusual Windows folder: $p" }
     }
 }
 foreach ($s in $svcs | Where-Object { $_.PathName -match '(?i)\\(cmd|powershell|pwsh|mshta|rundll32|regsvr32|wscript|cscript|nc|ncat)\.exe' -and $_.Name -notmatch '^(?i)(WinDefend|Sense)$' }) {
@@ -1247,6 +1258,10 @@ if ($isDC -or (Get-Service DNS)) {
     }
     $cache = Get-DnsServerCache
     if ($cache -and -not $cache.EnablePollutionProtection) { Flag 'DNS cache pollution protection is OFF' }
+    $dnsPar = 'HKLM:\SYSTEM\CurrentControlSet\Services\DNS\Parameters'
+    $plugin = Get-RegValue $dnsPar 'ServerLevelPluginDll'
+    if ($plugin) { Flag "The DNS server loads a plugin DLL: $plugin (ServerLevelPluginDll). This is how the DnsAdmins attack runs Mimikatz as SYSTEM (Mushroom Kingdom). Read it for a forensics question, then: Remove-ItemProperty '$dnsPar' ServerLevelPluginDll; Restart-Service DNS; delete the DLL" }
+    if ((Get-Service DNS) -and (Get-RegValue $dnsPar 'TcpReceivePacketSize') -ne 0xFF00) { Check 'SIGRed workaround not set: DNS\Parameters\TcpReceivePacketSize = 0xFF00 (scored on Mushroom Kingdom; restart DNS after setting it). Harden.ps1 sets it.' }
     $ldapSign = Get-RegValue 'HKLM:\SYSTEM\CurrentControlSet\Services\NTDS\Parameters' 'LDAPServerIntegrity'
     if ($isDC -and $ldapSign -ne 2) { Flag "LDAP server signing = $ldapSign (2 = require signing)" }
 }
