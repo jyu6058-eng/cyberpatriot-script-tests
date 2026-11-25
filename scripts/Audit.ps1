@@ -539,6 +539,11 @@ if ($lgpScripts) { foreach ($f in $lgpScripts) { Flag "$($f.FullName)"; if ($f.E
 Section 'DEFENSIVE COUNTERMEASURES (firewall, Defender, SMB, RDP)'
 $mps = Get-Service MpsSvc
 if ($mps -and $mps.Status -ne 'Running') { Flag "The firewall service (MpsSvc) is $($mps.Status) / $($mps.StartType) - the firewall is not filtering anything, whatever the profiles say" }
+# Each of these shares a svchost process with services of the same account; a changed account means error 1079 (King Arthur's Castle).
+foreach ($pair in @(@('MpsSvc', 'LocalService'), @('BFE', 'LocalService'), @('EventLog', 'LocalService'), @('WinDefend', 'LocalSystem'), @('Dnscache', 'NetworkService'), @('wuauserv', 'LocalSystem'))) {
+    $on = Get-RegValue "HKLM:\SYSTEM\CurrentControlSet\Services\$($pair[0])" 'ObjectName'
+    if ($on -and ($on -replace '^(?i)NT AUTHORITY\\', '') -ne $pair[1]) { Flag "Service $($pair[0]) logs on as '$on' (Windows: $($pair[1])), so it cannot start (error 1079). Fix ObjectName under HKLM\SYSTEM\CurrentControlSet\Services\$($pair[0]) in regedit, then reboot" }
+}
 $mpsDep = @((Get-Item 'HKLM:\SYSTEM\CurrentControlSet\Services\MpsSvc').GetValue('DependOnService', $null)) | Where-Object { $_ }
 if (@($mpsDep | Where-Object { $_ -notin 'mpsdrv', 'bfe', 'nsi' }).Count) { Flag "MpsSvc depends on $($mpsDep -join ', ') (Windows uses mpsdrv, bfe, nsi). A planted dependency that never starts keeps the firewall off. Fix HKLM\SYSTEM\CurrentControlSet\Services\MpsSvc\DependOnService in regedit (sc.exe config is denied for this service), then reboot." }
 $fwProfiles = @(Get-NetFirewallProfile -ErrorAction SilentlyContinue)

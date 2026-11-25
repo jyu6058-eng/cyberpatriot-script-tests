@@ -347,6 +347,16 @@ if ($extra.Count) {
         Set-ItemProperty -LiteralPath $mpsKey -Name DependOnService -Value ([string[]]$keep) -Type MultiString -ErrorAction Stop
     }
 }
+# Planted trick (King Arthur's Castle): MpsSvc set to log on as another account. It shares a svchost process with
+# LocalService services, so it fails with error 1079 and never starts. Same registry-only fix, then reboot.
+foreach ($pair in @(@('MpsSvc', 'NT Authority\LocalService'), @('BFE', 'NT AUTHORITY\LocalService'))) {
+    $k = "HKLM:\SYSTEM\CurrentControlSet\Services\$($pair[0])"
+    $on = (Get-Item -LiteralPath $k -ErrorAction SilentlyContinue).GetValue('ObjectName', $null)
+    if ($on -and ($on -replace '^(?i)NT AUTHORITY\\', '') -ne ($pair[1] -replace '^(?i)NT AUTHORITY\\', '')) {
+        $acct = $pair[1]
+        Run "$($pair[0]) logs on as '$on' (planted); set back to $acct - REBOOT, then it can start" { Set-ItemProperty -LiteralPath $k -Name ObjectName -Value $acct -ErrorAction Stop }
+    }
+}
 foreach ($fs in 'BFE','MpsSvc') {
     $svc = Get-Service $fs -ErrorAction SilentlyContinue
     if ($svc -and ($svc.StartType -ne 'Automatic' -or $svc.Status -ne 'Running')) {

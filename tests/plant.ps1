@@ -243,6 +243,7 @@ Plant 'driver-mimidrv' {
 Plant 'rdp-on' { SetReg 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server' 'fDenyTSConnections' 0 }
 # ---------- planted security options (values Windows keeps secure by default) and broken tools
 Plant 'defender-exclude-ext'  { Add-MpPreference -ExclusionExtension 'exe' -ErrorAction Stop }
+Plant 'mpssvc-account'      { SetReg 'HKLM:\SYSTEM\CurrentControlSet\Services\MpsSvc' 'ObjectName' 'LocalSystem' 'String' }   # King Arthur's Castle; applies only after a reboot
 Plant 'forceguest'            { SetReg 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' 'ForceGuest' 1 }
 Plant 'safedll-off'           { SetReg 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager' 'SafeDllSearchMode' 0 }
 Plant 'pointandprint-nowarn'  { SetReg 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers\PointAndPrint' 'NoWarningNoElevationOnInstall' 1 }

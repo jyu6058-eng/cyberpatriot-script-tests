@@ -76,6 +76,7 @@ $detect = @(
     ,@('task-shutdown','Task that shuts the PC down','\\Oxygen .*shuts down, restarts or logs off the PC',$false,'b')
     ,@('svc-psexec-style','PsExec/Impacket-style service','Service ffUx runs an unsigned program straight from C:\\Windows',$false,'b')
     ,@('dns-plugin-dll','DNS server plugin DLL (DnsAdmins attack)','The DNS server loads a plugin DLL: C:\\Windows\\System32\\mkxproxyloader\.dll',$false,'b')
+    ,@('mpssvc-account','Firewall service logon account changed','Service MpsSvc logs on as .LocalSystem.',$true,'b')
     ,@('defender-exclude-ext','Defender ignores every .exe','Defender ignores EVERY \.exe file',$true,'b')
     ,@('forceguest','Guest-only sharing model','sharing and security model = Guest only',$true,'b')
     ,@('safedll-off','Safe DLL search mode off','^\[!\] Safe DLL search mode',$true,'b')
@@ -227,6 +228,8 @@ if (Planted 'defender-ignore-severe') {
     Rec 'Harden.ps1' 'High threat default action no longer Allow' ((Get-MpPreference).HighThreatDefaultAction -notin 6, 9) "is $((Get-MpPreference).HighThreatDefaultAction)"
 }
 if (Planted 'mpssvc-depends-sense') { Rec 'Harden.ps1' 'Planted MpsSvc dependency removed, Windows ones kept' ((@((Get-Item 'HKLM:\SYSTEM\CurrentControlSet\Services\MpsSvc').GetValue('DependOnService')) -notcontains 'Sense') -and (@((Get-Item 'HKLM:\SYSTEM\CurrentControlSet\Services\MpsSvc').GetValue('DependOnService')) -contains 'mpsdrv')) }
+Rec 'No false positive' 'Normal service logon accounts not flagged' (-not (Has $before 'Service (BFE|EventLog|WinDefend|Dnscache|wuauserv) logs on as'))
+if (Planted 'mpssvc-account') { Rec 'Harden.ps1' 'MpsSvc logon account set back to LocalService' ((RegVal 'HKLM:\SYSTEM\CurrentControlSet\Services\MpsSvc' 'ObjectName') -match '^(?i)NT AUTHORITY\\LocalService$') }
 Rec 'No false positive' 'Clean MpsSvc dependencies (mpsdrv, bfe, nsi) not flagged' ((Planted 'mpssvc-depends-sense') -or -not (Has $before 'MpsSvc depends on'))
 Rec 'Harden.ps1' 'SMB compression off (SMBGhost)' ((RegVal 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters' 'DisableCompression') -eq 1)
 if (Get-Service DNS -ErrorAction SilentlyContinue) { Rec 'Harden.ps1' 'SIGRed workaround TcpReceivePacketSize = 0xFF00' ((RegVal 'HKLM:\SYSTEM\CurrentControlSet\Services\DNS\Parameters' 'TcpReceivePacketSize') -eq 0xFF00) }
