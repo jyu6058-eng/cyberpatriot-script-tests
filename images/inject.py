@@ -188,6 +188,7 @@ for hv in ('SYSTEM', 'SOFTWARE', 'SAM', 'SECURITY'):
         d, s1, s2 = hive_dirty(p)
         say(f'hive {hv}: {"DIRTY" if d else "clean"} (seq {s1}/{s2})')
 
+ifeo_hijacked = set()
 sw = ci('Windows/System32/config/SOFTWARE')
 if sw:
     h = hivex.Hivex(sw)
@@ -208,6 +209,23 @@ if sw:
     say(f'Installed programs ({len(progs)}):')
     for p in sorted(progs):
         say('  ' + p)
+    # Tool health: plants that stop PowerShell/cmd (and so this test's boot hook) from working
+    ifeo = path_node(h, r'Microsoft\Windows NT\CurrentVersion\Image File Execution Options')
+    dbg = []
+    if ifeo:
+        for c in h.node_children(ifeo):
+            d = val(h, c, 'Debugger')
+            if d:
+                dbg.append(f'{h.node_name(c)} -> {d}')
+                ifeo_hijacked.add(h.node_name(c).lower())
+    say(f'Tool health: IFEO debuggers ({len(dbg)}): ' + ('; '.join(dbg) if dbg else 'none'))
+    psp = path_node(h, r'Policies\Microsoft\Windows\PowerShell')
+    srp = 'present' if path_node(h, r'Policies\Microsoft\Windows\Safer\CodeIdentifiers') else 'none'
+    say(f"Tool health: PowerShell policy ExecutionPolicy={val(h, psp, 'ExecutionPolicy')} EnableScripts={val(h, psp, 'EnableScripts')}; Software Restriction Policies: {srp}")
+    for app in ('cmd', 'powershell'):
+        n = path_node(h, 'Microsoft\\Windows\\CurrentVersion\\App Paths\\' + app + '.exe')
+        if n:
+            say(f"Tool health: App Paths {app}.exe -> {val(h, n, '')}")
     del h
 
 sysh = ci('Windows/System32/config/SYSTEM')
@@ -226,6 +244,15 @@ for c in h.node_children(svcs):
 say(f'Non-Windows services ({len(interesting)}):')
 for s in sorted(interesting):
     say(s)
+env = path_node(h, cs + r'\Control\Session Manager\Environment')
+say(f"Tool health: ComSpec={val(h, env, 'ComSpec')} PATHEXT={val(h, env, 'PATHEXT')} __PSLockdownPolicy={val(h, env, '__PSLockdownPolicy')}")
+say(f"Tool health: PATH={val(h, env, 'Path')}")
+for svc in ('EventLog', 'Schedule', 'Winmgmt', 'LanmanServer', 'RpcSs'):
+    n = child(h, svcs, svc)
+    say(f"Tool health: service {svc} Start={val(h, n, 'Start') if n else 'MISSING'}")
+for exe in ('Windows/System32/cmd.exe', 'Windows/System32/WindowsPowerShell/v1.0/powershell.exe', 'Windows/System32/conhost.exe'):
+    q = ci(exe)
+    say(f"Tool health: {exe}: {os.path.getsize(q) if q else 'MISSING'} bytes")
 del h
 
 say('')
@@ -406,7 +433,23 @@ if dirty:
 
 boot = r"& ([scriptblock]::Create([IO.File]::ReadAllText('C:\cptest\run.ps1')))"
 enc = base64.b64encode(boot.encode('utf-16-le')).decode()
-image_path = (r'%SystemRoot%\System32\cmd.exe /c start "" %SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe '
+# A "broken" image can hijack cmd.exe/powershell.exe with an IFEO debugger, which only matches the file name:
+# start them through a hard link with another name instead (the image's own state is left as it is).
+launch = {}
+for name, folder in (('cmd.exe', 'Windows/System32'), ('powershell.exe', 'Windows/System32/WindowsPowerShell/v1.0')):
+    win = '%SystemRoot%\\' + folder.split('/', 1)[1].replace('/', '\\') + '\\'
+    launch[name] = win + name
+    if name in ifeo_hijacked:
+        src, d = ci(folder + '/' + name), ci(folder)
+        if src and d:
+            try:
+                os.link(src, os.path.join(d, 'cptest-' + name))
+            except FileExistsError:
+                pass
+            launch[name] = win + 'cptest-' + name
+            say(f'{name} has an IFEO debugger: the boot hook starts it as cptest-{name} so the hijack does not apply')
+# "set __PSLockdownPolicy=" clears a planted constrained-language switch for this hook only.
+image_path = (launch['cmd.exe'] + ' /c set __PSLockdownPolicy=& start "" ' + launch['powershell.exe'] + ' '
               r'-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -EncodedCommand ' + enc)
 open(os.path.join(dst, 'imagepath.txt'), 'w', encoding='utf-8').write(image_path)
 

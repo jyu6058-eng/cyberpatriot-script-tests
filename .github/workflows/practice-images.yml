@@ -57,6 +57,7 @@ jobs:
             drive_id: 1Og8lIMVqGKKenFXTpWYhA8X-szXyRtcY
             size: 11644203438
             extra_scoring: ''
+            vm_minutes: 90
           - key: king-arthurs-castle
             row: blog
             title: KING ARTHUR'S CASTLE (Server 2019)
@@ -105,6 +106,7 @@ jobs:
           EXPECT_SIZE: ${{ matrix.size }}
           EXTRA_SCORING_ID: ${{ matrix.extra_scoring }}
           ARCHIVE_PW: ${{ matrix.archive_pw }}
+          VM_MINUTES: ${{ matrix.vm_minutes }}
           ONLY: ${{ inputs.only }}
         run: bash images/run-image.sh
 

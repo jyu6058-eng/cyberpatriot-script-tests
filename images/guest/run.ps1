@@ -86,7 +86,11 @@ function Restore-StaticIP {
 }
 
 function Save-ScmErrors([string]$tag) {
-    $ev = Get-WinEvent -FilterHashtable @{ LogName = 'System'; ProviderName = 'Service Control Manager'; Level = 2; StartTime = $os.LastBootUpTime } -ErrorAction SilentlyContinue
+    # In a job with a time limit: with the Event Log service broken, reading the log must not stall the run.
+    $j = Start-Job -ArgumentList $os.LastBootUpTime -ScriptBlock { param($since) Get-WinEvent -FilterHashtable @{ LogName = 'System'; ProviderName = 'Service Control Manager'; Level = 2; StartTime = $since } -ErrorAction SilentlyContinue }
+    $ev = @()
+    if (Wait-Job $j -Timeout 90) { $ev = @(Receive-Job $j) } else { Log 'reading the System log timed out (Event Log service broken?)' }
+    Remove-Job $j -Force -ErrorAction SilentlyContinue
     $ev | ForEach-Object { '{0:HH:mm:ss} {1} {2}' -f $_.TimeCreated, $_.Id, ($_.Message -replace '\s+', ' ') } | Set-Content "$out\scm-errors-$tag.txt"
     Log "service start errors since boot: $(@($ev).Count)"
     $ev | Where-Object { $_.Message -match '(?i)firewall|defender|mpssvc|bfe' } | Select-Object -First 3 | ForEach-Object { Log ("  SCM {0}: {1}" -f $_.Id, ($_.Message -replace '\s+', ' ')) }
@@ -102,6 +106,7 @@ function Wait-Ready {
         } until ($ok -or ((Get-Date) - $t0).TotalMinutes -gt 15)
         Log "Active Directory ready: $ok after $([int]((Get-Date) - $t0).TotalSeconds)s"
     }
+    Log 'waiting 4 min so the scoring engine finishes a pass after boot'
     Start-Sleep 240      # let the scoring engine finish a pass after boot
 }
 
@@ -141,7 +146,8 @@ function Run-Script([string]$tag, [string]$script, [string]$scriptArgs, [int]$mi
     $enc  = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($code))
     $t0 = Get-Date
     Log "running $script $scriptArgs (limit $minutes min)"
-    $p = Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `
+    # Same executable as this process: cptest-powershell.exe when the image hijacks powershell.exe with an IFEO debugger
+    $p = Start-Process -FilePath ([Diagnostics.Process]::GetCurrentProcess().MainModule.FileName) `
         -ArgumentList "-NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand $enc" `
         -RedirectStandardOutput "$out\$tag.console.txt" -RedirectStandardError "$out\$tag.err.txt" `
         -RedirectStandardInput $empty -NoNewWindow -PassThru

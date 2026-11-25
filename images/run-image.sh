@@ -207,8 +207,10 @@ done
 echo "qemu-system-x86_64 ${QARGS[*]}" >> "$OUT/host.log"
 log "booting (nic=$NIC mem=${MEMQ}M firmware=${FW:-bios}); limit ${VM_MINUTES} min"
 start=$(date +%s); n=0; seen=0; done_at=0
-last_shot_hash=""; same_since=0; resets=0; boots=0
+last_shot_hash=""; same_since=0; resets=0; boots=0; last_wr=-1; wr_since=0
 mon() { echo "$1" | socat - "UNIX-CONNECT:$W/mon.sock" >/dev/null 2>&1; }
+# Sum of write operations on all of the VM's disks; a running Windows writes something every few minutes.
+disk_writes() { echo 'info blockstats' | socat -t 2 - "UNIX-CONNECT:$W/mon.sock" 2>/dev/null | grep -oE 'wr_operations=[0-9]+' | awk -F= '{s+=$2} END {print s+0}'; }
 # Did the guest finish (run.ps1 logs ALL DONE before powering off)? Read it from the disk, since COM1 is missing on some images.
 guest_finished() {
     local ok=1
@@ -221,7 +223,7 @@ guest_finished() {
     return $ok
 }
 while :; do
-    boots=$((boots+1)); stopped_by_us=0
+    boots=$((boots+1)); stopped_by_us=0; last_wr=-1; wr_since=$(( $(date +%s) - start ))
     rm -f "$W/mon.sock"
     qemu-system-x86_64 "${QARGS[@]}" >> "$OUT/qemu.log" 2>&1 &
     QPID=$!
@@ -242,6 +244,15 @@ while :; do
                 log "screen unchanged for $(( (el - same_since) / 60 )) min and not blank: guest looks frozen; resetting the VM (the guest steps resume after a reboot)"
                 mon system_reset; resets=$((resets+1)); same_since=$el; last_shot_hash=""
             fi
+        fi
+    fi
+    # Second freeze watchdog for a blank screen (Cincinnati Zoo showed nothing all run): no disk writes for 20 minutes.
+    if (( n % 2 == 0 && done_at == 0 )); then
+        wr=$(disk_writes)
+        if [ "$wr" != "$last_wr" ]; then last_wr=$wr; wr_since=$el
+        elif (( el - wr_since >= 1200 && resets < 2 )); then
+            log "no disk writes for $(( (el - wr_since) / 60 )) min: guest looks frozen; resetting the VM (the guest steps resume after a reboot)"
+            mon system_reset; resets=$((resets+1)); wr_since=$el; same_since=$el; last_shot_hash=""
         fi
     fi
     if [ -f "$OUT/serial.log" ]; then
