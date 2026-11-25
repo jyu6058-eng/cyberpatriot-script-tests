@@ -62,6 +62,7 @@ function Get-RegValue([string]$path, [string]$name) {
 $mimiRx = '(?i)mimikatz|mimidrv|mimilib|gentilkiwi|benjamin delpy'   # survives renaming: it is in the file's version info
 $engineRx = '(?i)\\(aeacus|CyberPatriot|CCS)\\|\\(phocus|CCSClient)\.exe|\\Scoring\\Magistrate\\|\\Magistrate(\.Windows|HUD)\.exe'   # aeacus, the official client, Magistrate
 function Is-Engine([string]$p) { return ($p -match $engineRx) }
+$engineUserRx = '^(?i)(magistrate|aeacus|cyberpatriot|ccsclient)$'   # accounts a scoring engine runs as (Mushroom Kingdom: AD user MAGISTRATE)
 
 # ---------------------------------------------------------------- preflight
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
@@ -176,6 +177,7 @@ if (-not $isDC) {
         Description)
     foreach ($u in $users) {
         $rid = $u.SID.Value.Split('-')[-1]
+        if ($u.Name -match $engineUserRx) { Info "User '$($u.Name)': scoring engine account - leave it alone"; continue }
         if ($u.Name.EndsWith('$'))                 { Flag "User '$($u.Name)' ends in `$ - 'net user' hides these. Is it in the README?" }
         if ($rid -eq '501' -and $u.Enabled)        { Flag "Guest account (renamed or not: '$($u.Name)') is ENABLED" }
         if ($rid -eq '500' -and $u.Enabled -and $me.User.Value -notlike '*-500') { Check "Built-in Administrator '$($u.Name)' is enabled (disable it unless README says otherwise)" }
@@ -206,6 +208,7 @@ else {
     Out-Table ($adUsers | Select-Object SamAccountName, Enabled, PasswordNeverExpires, PasswordNotRequired, DoesNotRequirePreAuth, AllowReversiblePasswordEncryption, @{n='SPN';e={($_.ServicePrincipalName -join ';')}}, Description)
     foreach ($u in $adUsers) {
         if ($u.SamAccountName -eq 'krbtgt') { continue }
+        if ($u.SamAccountName -match $engineUserRx) { Info "AD user '$($u.SamAccountName)': scoring engine account - leave it alone"; continue }
         if ($u.DoesNotRequirePreAuth)            { Flag "AD user '$($u.SamAccountName)' has Kerberos pre-auth DISABLED (AS-REP roastable)" }
         if ($u.PasswordNotRequired)              { Flag "AD user '$($u.SamAccountName)' has PasswordNotRequired" }
         if ($u.AllowReversiblePasswordEncryption){ Flag "AD user '$($u.SamAccountName)' stores password with reversible encryption" }
