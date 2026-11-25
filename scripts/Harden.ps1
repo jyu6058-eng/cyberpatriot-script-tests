@@ -523,7 +523,7 @@ if ($isDC) {
 if (Get-Service DNS -ErrorAction SilentlyContinue) {
     Step 'DNS server: SIGRed workaround and plugin DLL'
     $dnsPar = 'HKLM:\SYSTEM\CurrentControlSet\Services\DNS\Parameters'
-    Set-Reg $dnsPar 'TcpReceivePacketSize' 0xFF00   # CVE-2020-1350 workaround; takes effect when DNS restarts
+    Set-Reg $dnsPar 'TcpReceivePacketSize' 65280   # 0xFF00, the CVE-2020-1350 (SIGRed) workaround; takes effect when DNS restarts
     $plugin = (Get-ItemProperty -LiteralPath $dnsPar -ErrorAction SilentlyContinue).ServerLevelPluginDll
     if ($plugin) { Say "  WARNING: the DNS server loads a plugin DLL: $plugin - the DnsAdmins attack (not removed here; it may be forensics evidence). Remove: Remove-ItemProperty '$dnsPar' ServerLevelPluginDll; Restart-Service DNS" 'Yellow' }
 }
