@@ -204,7 +204,7 @@ while ($idx -lt $steps.Count) {
     & $s.a
     $idx++; $tries = 0
     Set-Content -Path $state -Value "$idx 0"
-    if ($script:rebooting) { Dismount-UserHive; Restart-Computer -Force; exit }
+    if ($script:rebooting) { Dismount-UserHive; & shutdown.exe /a 2>$null; Restart-Computer -Force; exit }   # /a: cancel a countdown a planted task started (Among the Reindeer)
 }
 Dismount-UserHive
 Log 'ALL DONE - powering off'

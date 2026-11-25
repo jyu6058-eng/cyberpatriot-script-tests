@@ -898,6 +898,7 @@ foreach ($t in $allTasks | Where-Object { $_.TaskPath -notlike '\Microsoft\*' })
     if (Is-Engine $acts) { Info "    $line   <- scoring engine" }
     elseif (@($t.Actions | Where-Object { $_.Execute -and [Environment]::ExpandEnvironmentVariables($_.Execute).Trim('"') -match $coreRx }).Count) { Flag "$line   (a task should never start a core Windows process; wininit.exe here means a blue screen)" }
     elseif ($t.TaskName -match '^(?i)Microsoft|OneDrive|Google|Adobe' -and @($t.Actions | Where-Object { $_.Execute -match $shellRx }).Count) { Flag "$line   (vendor-looking name, but it runs a shell)" }
+    elseif ($acts -match '(?i)(^|\\|\s)(shutdown(\.exe)?\s+.*[/-][srplf]\b|logoff(\.exe)?\b|tsdiscon|Stop-Computer|Restart-Computer)') { Flag "$line   (shuts down, restarts or logs off the PC: a planted trap - Among the Reindeer had one. Run shutdown /a to cancel a countdown)" }
     else { Check $line }
 }
 Info 'Tasks inside \Microsoft\ that run a shell or script (Microsoft''s own tasks almost never do - malware hides here):'
@@ -1032,7 +1033,7 @@ foreach ($ax in Get-AppxPackage -AllUsers -ErrorAction SilentlyContinue | Where-
 Out-Line ''
 if (-not $Quick) {
     Info 'Hacking tools, media, archives and password-looking files (one fast pass, stops after 6 minutes):'
-    $toolRx    = [regex]'(?i)^(nc|nc64|ncat|nmap|zenmap|wireshark)\.exe$|^(netcat|cryptcat|mimikatz|lazagne|hashcat|hydra|sharphound|rubeus|keylog)|^(procdump|psexec|john).*\.exe$|\.torrent$|crack|keygen'
+    $toolRx    = [regex]'(?i)^(nc|nc64|ncat|nmap|zenmap|wireshark)\.exe$|^(netcat|cryptcat|mimikatz|lazagne|hashcat|hydra|sharphound|rubeus|keylog)|^(procdump|psexec|john).*\.exe$|\.torrent$|crack|(?<!ssh-)keygen'   # ssh-keygen (Git, OpenSSH) is not a crack tool
     $mediaRx   = [regex]'(?i)\.(mp3|mp4|wav|flac|m4a|aac|ogg|wma|avi|mkv|mov|wmv|flv|webm|m4v|mpg|mpeg)$|\.(zip|7z|rar|tar|gz|iso|kdbx|pcap|pcapng)$|pass.*\.txt$|password|cred.*\.txt$|secret'
     $noMediaRx = [regex]'(?i)^C:\\(Program Files|Program Files \(x86\)|ProgramData)\\|\\AppData\\Local\\(Microsoft|Packages|Temp)\\|\\WindowsApps\\|\\CP-Audit'
     $skipDirRx = [regex]'(?i)\\SysinternalsSuite$|\\WinSxS$'

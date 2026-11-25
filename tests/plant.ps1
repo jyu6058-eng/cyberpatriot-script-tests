@@ -166,6 +166,13 @@ Plant 'task-ms-powershell' {
     Register-ScheduledTask -TaskPath '\Microsoft\Windows\Maintenance\' -TaskName 'SysCheck' -Action $a -Trigger $t -ErrorAction Stop | Out-Null
     Disable-ScheduledTask -TaskPath '\Microsoft\Windows\Maintenance\' -TaskName 'SysCheck' | Out-Null
 }
+Plant 'task-shutdown' {
+    # Never allowed to run: disabled and dated 2099 (Among the Reindeer's \Oxygen task ran shutdown.exe /s /t 1600).
+    $a = New-ScheduledTaskAction -Execute 'shutdown.exe' -Argument '/s /t 1600'
+    $t = New-ScheduledTaskTrigger -Once -At ([datetime]'2099-01-01')
+    Register-ScheduledTask -TaskName 'Oxygen' -Action $a -Trigger $t -ErrorAction Stop | Out-Null
+    Disable-ScheduledTask -TaskName 'Oxygen' | Out-Null
+}
 Plant 'task-wininit' {
     # Never allowed to run: disabled and dated 2099 (running wininit.exe as a task blue-screens the PC).
     $a = New-ScheduledTaskAction -Execute 'wininit.exe'

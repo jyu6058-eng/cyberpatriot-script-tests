@@ -73,6 +73,7 @@ $detect = @(
     ,@('dns-weak','DNS non-secure dynamic updates','Zone cp\.test allows NON-secure dynamic updates',$false,'b')
     ,@('dns-weak','DNS cache pollution protection off','DNS cache pollution protection is OFF',$true,'b')
     ,@('autologon','AutoAdminLogon on','AutoAdminLogon = 1',$true,'b')
+    ,@('task-shutdown','Task that shuts the PC down','\\Oxygen .*shuts down, restarts or logs off the PC',$false,'b')
     ,@('svc-psexec-style','PsExec/Impacket-style service','Service ffUx runs an unsigned program straight from C:\\Windows',$false,'b')
     ,@('dns-plugin-dll','DNS server plugin DLL (DnsAdmins attack)','The DNS server loads a plugin DLL: C:\\Windows\\System32\\mkxproxyloader\.dll',$false,'b')
     ,@('defender-exclude-ext','Defender ignores every .exe','Defender ignores EVERY \.exe file',$true,'b')

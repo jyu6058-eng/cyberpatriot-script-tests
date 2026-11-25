@@ -206,12 +206,26 @@ for j in "${order[@]}"; do
 done
 echo "qemu-system-x86_64 ${QARGS[*]}" >> "$OUT/host.log"
 log "booting (nic=$NIC mem=${MEMQ}M firmware=${FW:-bios}); limit ${VM_MINUTES} min"
-qemu-system-x86_64 "${QARGS[@]}" > "$OUT/qemu.log" 2>&1 &
-QPID=$!
 start=$(date +%s); n=0; seen=0; done_at=0
-last_shot_hash=""; same_since=0; resets=0
+last_shot_hash=""; same_since=0; resets=0; boots=0
 mon() { echo "$1" | socat - "UNIX-CONNECT:$W/mon.sock" >/dev/null 2>&1; }
-while kill -0 "$QPID" 2>/dev/null; do
+# Did the guest finish (run.ps1 logs ALL DONE before powering off)? Read it from the disk, since COM1 is missing on some images.
+guest_finished() {
+    local ok=1
+    nbd_up "$WINDISK" "$W/disk$WINDISK.qcow2" -r
+    if mount_win "/dev/nbd${WINDISK}p$WINPNUM" ro; then
+        f=$(sudo find /mnt/w -maxdepth 3 -ipath '/mnt/w/cptest/out/run.log' -print -quit 2>/dev/null)
+        [ -n "$f" ] && sudo grep -q 'ALL DONE' "$f" && ok=0
+    fi
+    umount_win; nbd_down
+    return $ok
+}
+while :; do
+    boots=$((boots+1)); stopped_by_us=0
+    rm -f "$W/mon.sock"
+    qemu-system-x86_64 "${QARGS[@]}" >> "$OUT/qemu.log" 2>&1 &
+    QPID=$!
+    while kill -0 "$QPID" 2>/dev/null; do
     sleep 30; n=$((n+1))
     el=$(( $(date +%s) - start ))
     if (( n % 2 == 0 )); then
@@ -235,11 +249,20 @@ while kill -0 "$QPID" 2>/dev/null; do
         if (( total > seen )); then sed -n "$((seen+1)),${total}p" "$OUT/serial.log" | tr -d '\r' | sed 's/^/  guest: /'; seen=$total; fi
         if (( done_at == 0 )) && grep -q 'ALL DONE' "$OUT/serial.log"; then done_at=$el; fi
     fi
-    if (( done_at > 0 && el - done_at > 300 )); then log "guest said ALL DONE but did not power off; stopping VM"; mon quit; break; fi
-    if (( el > VM_MINUTES * 60 )); then log "time limit reached; stopping VM"; mon "screendump $OUT/shots/final.png -f png"; sleep 3; mon quit; break; fi
+    if (( done_at > 0 && el - done_at > 300 )); then log "guest said ALL DONE but did not power off; stopping VM"; stopped_by_us=1; mon quit; break; fi
+    if (( el > VM_MINUTES * 60 )); then log "time limit reached; stopping VM"; stopped_by_us=1; mon "screendump $OUT/shots/final.png -f png"; sleep 3; mon quit; break; fi
+    done
+    wait "$QPID" 2>/dev/null
+    (( stopped_by_us )) && break
+    (( done_at > 0 )) && break
+    # The guest powered itself off. Normal at the end, but a planted task can shut the PC down early
+    # (Among the Reindeer: shutdown.exe /s /t 1600). Then boot it again: run.ps1 resumes from its saved step.
+    if guest_finished; then break; fi
+    el=$(( $(date +%s) - start ))
+    if (( boots >= 3 || el > VM_MINUTES * 60 )); then log "guest powered off before finishing, and no boots or time are left"; break; fi
+    log "guest powered off before finishing (a planted shutdown?); booting it again to resume (boot $((boots+1)))"
 done
-wait "$QPID" 2>/dev/null
-log "VM stopped after $(( ($(date +%s) - start) / 60 )) min"
+log "VM stopped after $(( ($(date +%s) - start) / 60 )) min ($boots boot(s))"
 cat "$OUT/qemu.log" >> "$OUT/host.log"
 
 # ------------------------------------------------------------ collect
