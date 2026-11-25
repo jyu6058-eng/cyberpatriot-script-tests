@@ -50,6 +50,50 @@ jobs:
             drive_id: 1RqOvBrkJjmhIVPqIv1YQ355WzQZNEKas
             size: 25274712150
             extra_scoring: ''
+          # Windows images recommended in akshayrohatgi.com "How To Win CyberPatriot"
+          - key: my-little-pony
+            row: blog
+            title: MY LITTLE PONY (Windows 10)
+            drive_id: 1Og8lIMVqGKKenFXTpWYhA8X-szXyRtcY
+            size: 11644203438
+            extra_scoring: ''
+          - key: king-arthurs-castle
+            row: blog
+            title: KING ARTHUR'S CASTLE (Server 2019)
+            drive_id: 13OBAXsv408TQJ-WtNMc-mUEe2IBvI-UV
+            size: 6274040106
+            extra_scoring: ''
+          - key: among-the-reindeer
+            row: blog
+            title: AMONG THE REINDEER (Windows 10)
+            drive_id: 1h1P-BAwL5Pdm6l1GwWmbbDb2BnW3M6UE
+            size: 13067625274
+            extra_scoring: ''
+          - key: mushroom-kingdom
+            row: blog
+            title: MUSHROOM KINGDOM SERVER (Server 2019)
+            drive_id: 1KR1mnH5k5XGTOEJ-FdnYbZvLl12yMlQO
+            size: 10078656482
+            extra_scoring: ''
+            archive_pw: MushroomMan64
+          - key: cincinnati-zoo
+            row: blog
+            title: THE CINCINNATI ZOO (Windows 10)
+            drive_id: 1ai3vff_pS_rABc8hsnE_0uv08MOZiB1W
+            size: 15015488370
+            extra_scoring: ''
+          - key: santas-workshop
+            row: blog
+            title: SANTA'S WORKSHOP (Windows 10)
+            drive_id: 1T7Lj5rHqq3JD2O1tZf_24vTytdOKytXO
+            size: 7153703100
+            extra_scoring: ''
+          - key: kalipatriot-win10
+            row: blog
+            title: WINDOWS 10 PRACTICE (KaliPatriot)
+            drive_id: 1FzzYG7haDwrz4D69MtKGDifDpqNWcg5q
+            size: 3580538533
+            extra_scoring: ''
     steps:
       - uses: actions/checkout@v4
 
@@ -60,6 +104,7 @@ jobs:
           DRIVE_ID: ${{ matrix.drive_id }}
           EXPECT_SIZE: ${{ matrix.size }}
           EXTRA_SCORING_ID: ${{ matrix.extra_scoring }}
+          ARCHIVE_PW: ${{ matrix.archive_pw }}
           ONLY: ${{ inputs.only }}
         run: bash images/run-image.sh
 

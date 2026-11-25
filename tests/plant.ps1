@@ -221,6 +221,26 @@ Plant 'driver-mimidrv' {
     if ($LASTEXITCODE -ne 0) { throw "sc create exit $LASTEXITCODE" }
 }
 Plant 'rdp-on' { SetReg 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server' 'fDenyTSConnections' 0 }
+# ---------- planted security options (values Windows keeps secure by default) and broken tools
+Plant 'forceguest'            { SetReg 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' 'ForceGuest' 1 }
+Plant 'safedll-off'           { SetReg 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager' 'SafeDllSearchMode' 0 }
+Plant 'pointandprint-nowarn'  { SetReg 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers\PointAndPrint' 'NoWarningNoElevationOnInstall' 1 }
+Plant 'null-session-share'    { SetReg 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters' 'NullSessionShares' ([string[]]@('Public')) 'MultiString' }
+Plant 'insecure-guest-smb'    { SetReg 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanWorkstation\Parameters' 'AllowInsecureGuestAuth' 1 }
+Plant 'installer-usercontrol' { SetReg 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Installer' 'EnableUserControl' 1 }
+Plant 'llmnr-on-policy'       { SetReg 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient' 'EnableMulticast' 1 }
+Plant 'broken-taskmgr'        { SetReg 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' 'DisableTaskMgr' 1 }
+Plant 'broken-disallowrun'    {
+    SetReg 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer' 'DisallowRun' 1
+    SetReg 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer\DisallowRun' '1' 'regedit.exe' 'String'
+}
+Plant 'path-hijack' {
+    # Registry only: running processes (and the CI runner) keep their own environment.
+    $ek = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment'
+    $raw = (Get-Item -LiteralPath $ek).GetValue('Path', '', 'DoNotExpandEnvironmentNames')
+    New-Item -ItemType Directory -Force -Path 'C:\Users\Public\bin' | Out-Null
+    Set-ItemProperty -LiteralPath $ek -Name Path -Value ('C:\Users\Public\bin;' + $raw) -Type ExpandString
+}
 Plant 'firefox-autoconfig' {
     $ff = 'C:\Program Files\Mozilla Firefox'
     if (-not (Test-Path "$ff\firefox.exe")) { throw 'Firefox not installed on this runner' }

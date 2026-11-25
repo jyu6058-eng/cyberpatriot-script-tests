@@ -225,6 +225,8 @@ Step 'Audit policy'
 Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' 'SCENoApplyLegacyAuditPolicy' 1
 Set-Reg 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\Audit' 'ProcessCreationIncludeCmdLine_Enabled' 1
 Set-Reg 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging' 'EnableScriptBlockLogging' 1
+Set-Reg 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ModuleLogging' 'EnableModuleLogging' 1
+Set-Reg 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ModuleLogging\ModuleNames' '*' '*' 'String'
 Run 'enable Success+Failure auditing on every subcategory (auditpol)' {
     auditpol /set /category:* /success:enable /failure:enable | Out-Null
     if ($LASTEXITCODE -ne 0) {
@@ -287,8 +289,34 @@ Set-Reg $SY 'DisableCAD' 0                     # require CTRL+ALT+DEL
 Set-Reg $SY 'DontDisplayLastUserName' 1
 Set-Reg $SY 'InactivityTimeoutSecs' 900
 Set-Reg $SY 'ShutdownWithoutLogon' 0
+# Values Windows keeps secure by default; images plant the opposite (from CIS and the CyberPatriot-Toolkit checklists)
+$LSA = 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa'
+Set-Reg $LSA 'ForceGuest' 0                                   # sharing model: Classic, not Guest only
+Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager' 'SafeDllSearchMode' 1
+Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Services\Netlogon\Parameters' 'DisablePasswordChange' 0
+Set-Reg 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Installer' 'EnableUserControl' 0
+Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanWorkstation\Parameters' 'AllowInsecureGuestAuth' 0
+Set-Reg 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\LanmanWorkstation' 'AllowInsecureGuestAuth' 0
+Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters' 'NullSessionShares' ([string[]]@()) 'MultiString'
+if (-not $isDC) {
+    Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters' 'NullSessionPipes' ([string[]]@()) 'MultiString'
+    Set-Reg $LSA 'RestrictRemoteSAM' 'O:BAG:BAD:(A;;RC;;;BA)' 'String'   # remote SAM calls: Administrators only
+}
+# PrintNightmare: only admins install printer drivers, and Point and Print always warns and elevates
+$PNP = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers\PointAndPrint'
+Set-Reg $PNP 'RestrictDriverInstallationToAdministrators' 1
+Set-Reg $PNP 'NoWarningNoElevationOnInstall' 0
+Set-Reg $PNP 'UpdatePromptSettings' 0
+Set-Reg 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient' 'EnableMulticast' 0   # LLMNR off (name-poisoning attacks)
+# Network stack (MSS settings in the CIS benchmark)
+Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters' 'DisableIPSourceRouting' 2
+Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters' 'DisableIPSourceRouting' 2
+Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters' 'EnableICMPRedirect' 0
+Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Services\NetBT\Parameters' 'NoNameReleaseOnDemand' 1
 if ($isDC) {
     Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Services\NTDS\Parameters' 'LDAPServerIntegrity' 2   # require LDAP signing
+    Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Services\Netlogon\Parameters' 'RefusePasswordChange' 0
+    Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Services\Netlogon\Parameters' 'FullSecureChannelProtection' 1   # Zerologon enforcement
 }
 
 # ------------------------------------------------------------------ 4. credential theft protection
@@ -395,10 +423,12 @@ if ($ex.ExclusionPath -or $ex.ExclusionProcess -or $ex.ExclusionExtension) {
 Step 'AutoPlay, SmartScreen, attachments, Remote Assistance, hardened UNC paths'
 Set-Reg 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer' 'NoDriveTypeAutoRun' 255
 Set-Reg 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer' 'NoAutorun' 1
+Set-Reg 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Explorer' 'NoAutoplayfornonVolume' 1
 Set-Reg 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System' 'EnableSmartScreen' 1
 Set-Reg 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Attachments' 'SaveZoneInformation' 2   # 2 = keep zone info ("Do not preserve zone information" = Disabled)
 Set-Reg 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Attachments' 'SaveZoneInformation' 2
 Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Control\Remote Assistance' 'fAllowToGetHelp' 0
+Set-Reg 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services' 'fAllowUnsolicited' 0   # no unsolicited Remote Assistance offers
 Set-Reg 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services' 'fAllowToGetHelp' 0
 # WinRM: no Basic auth, no unencrypted traffic (does not turn WinRM on or off)
 foreach ($side in 'Service','Client') {

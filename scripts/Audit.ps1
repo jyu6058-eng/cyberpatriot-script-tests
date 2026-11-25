@@ -83,6 +83,86 @@ Info "Computer:      $env:COMPUTERNAME   Domain: $((Get-CimInstance Win32_Comput
 Info "Running as:    $($me.Name)  ($($me.User.Value))"
 Info "Remember: the README decides what is 'required'. Nothing here is a reason to remove a critical service."
 
+# ---------------------------------------------------------------- BROKEN TOOLS
+# State-round images often break the tools you need (PowerShell, cmd, regedit, Task Manager, PATH).
+Section 'BROKEN TOOLS (fix these first: they stop you, or the scripts, from working)'
+$broken = 0
+$hives = @('HKLM:') + @(Get-ChildItem Registry::HKEY_USERS -ErrorAction SilentlyContinue |
+    Where-Object { $_.PSChildName -match '^S-1-5-21-[\d-]+$' } | ForEach-Object { "Registry::HKEY_USERS\$($_.PSChildName)" })
+foreach ($h in $hives) {
+    $who = 'all users (HKLM)'
+    if ($h -ne 'HKLM:') { $sid = $h -replace '^.*\\', ''; $who = $sid; try { $who = ([Security.Principal.SecurityIdentifier]$sid).Translate([Security.Principal.NTAccount]).Value } catch {} }
+    $shown = $h -replace '^Registry::HKEY_USERS', 'HKU' -replace '^HKLM:', 'HKLM'
+    $exp = "$h\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer"
+    foreach ($kind in 'DisallowRun', 'RestrictRun') {
+        if ((Get-RegValue $exp $kind) -eq 1) {
+            $lk = Get-Item -LiteralPath "$exp\$kind" -ErrorAction SilentlyContinue
+            $names = if ($lk) { ($lk.GetValueNames() | ForEach-Object { $lk.GetValue($_) }) -join ', ' } else { '' }
+            Flag "$kind is on for ${who}: Explorer refuses to start $(if ($kind -eq 'DisallowRun') { 'these programs' } else { 'everything except these programs' }): $names. Fix: delete the $kind value and key under $shown\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer"
+            $broken++
+        }
+    }
+    $psys = "$h\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System"
+    if ((Get-RegValue $psys 'DisableTaskMgr') -eq 1) { Flag "Task Manager is disabled for $who ($shown\...\Policies\System\DisableTaskMgr = 1)"; $broken++ }
+    if ((Get-RegValue $psys 'DisableRegistryTools') -ge 1) { Flag "Registry Editor is disabled for $who ($shown\...\Policies\System\DisableRegistryTools). reg.exe and PowerShell still work: Remove-ItemProperty that value"; $broken++ }
+    if ((Get-RegValue "$h\SOFTWARE\Policies\Microsoft\Windows\System" 'DisableCMD') -ge 1) { Flag "Command Prompt is disabled for $who ($shown\SOFTWARE\Policies\Microsoft\Windows\System\DisableCMD)"; $broken++ }
+    $psp = "$h\SOFTWARE\Policies\Microsoft\Windows\PowerShell"
+    $es = Get-RegValue $psp 'EnableScripts'; $ep = Get-RegValue $psp 'ExecutionPolicy'
+    if ($es -eq 0 -or $ep -match '^(Restricted|AllSigned)$') {
+        Flag "Group Policy forces the PowerShell execution policy for $who (EnableScripts=$es ExecutionPolicy=$ep). Set-ExecutionPolicy -Scope Process cannot override it. Fix: gpedit.msc > Administrative Templates > Windows Components > Windows PowerShell > Turn on Script Execution = Not Configured (or delete those values), then gpupdate /force"
+        $broken++
+    } elseif ($ep -eq 'RemoteSigned') { Check "Group Policy sets the PowerShell execution policy to RemoteSigned for ${who}: downloaded scripts only run after Unblock-File .\*.ps1" }
+}
+$saferKey = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Safer\CodeIdentifiers'
+if (Test-Path $saferKey) {
+    $lvl = Get-RegValue $saferKey 'DefaultLevel'
+    if ($lvl -eq 0) { Flag 'Software Restriction Policies: default level is Disallowed (only allowed paths can run). secpol.msc > Software Restriction Policies'; $broken++ }
+    foreach ($r in Get-ChildItem "$saferKey\0\Paths", "$saferKey\0\Hashes" -ErrorAction SilentlyContinue) {
+        $item = $r.GetValue('ItemData', ''); if (-not $item) { $item = $r.GetValue('FriendlyName', '') }
+        if ($item -match '(?i)powershell|pwsh|cmd\.exe|regedit|taskmgr|mmc|secpol|gpedit|services|\\Windows\\|system32') { Flag "Software Restriction Policy BLOCKS: $item (secpol.msc > Software Restriction Policies > Additional Rules)"; $broken++ }
+        else { Check "Software Restriction Policy blocks: $item" }
+    }
+}
+try {
+    $alp = [xml](Get-AppLockerPolicy -Effective -Xml -ErrorAction Stop)
+    $rules = @($alp.SelectNodes('//*[@Action]'))
+    if ($rules.Count) {
+        $deny = @($rules | Where-Object { $_.Action -eq 'Deny' })
+        Check "AppLocker has $($rules.Count) rule(s), $($deny.Count) deny: $((@($deny | ForEach-Object { $_.Name }) | Select-Object -First 6) -join '; ') (secpol.msc > Application Control Policies; enforced only while the AppIDSvc service runs)"
+    }
+} catch {}
+$envKey = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment'
+$sysRoot = $env:SystemRoot.TrimEnd('\')
+$machinePath = @(([string](Get-RegValue $envKey 'Path')) -split ';' | Where-Object { $_ } | ForEach-Object { [Environment]::ExpandEnvironmentVariables($_).TrimEnd('\') })
+$s32 = -1
+for ($i = 0; $i -lt $machinePath.Count; $i++) { if ($machinePath[$i] -ieq "$sysRoot\system32") { $s32 = $i; break } }
+if ($s32 -lt 0) { Flag "The machine PATH no longer contains $sysRoot\system32: commands like cmd, net, sc stop working by name. Fix it in sysdm.cpl > Advanced > Environment Variables"; $broken++ }
+else {
+    for ($i = 0; $i -lt $s32; $i++) {
+        $pe = $machinePath[$i]
+        if ($pe -match '(?i)\\Users\\|\\Temp(\\|$)|\\Public(\\|$)|\\ProgramData\\(?!Oracle\\Java\\javapath)') { Flag "PATH hijack: '$pe' (a folder normal users can write to) comes BEFORE System32 in the machine PATH, so a program there named like a Windows command runs instead"; $broken++ }
+        elseif ($pe -notmatch "^(?i)$([regex]::Escape($sysRoot))") { Check "'$pe' comes before System32 in the machine PATH (some installers do this; make sure it holds no fake Windows commands)" }
+    }
+}
+if (-not ($machinePath | Where-Object { $_ -ieq "$sysRoot\System32\WindowsPowerShell\v1.0" })) { Check "The machine PATH has no $sysRoot\System32\WindowsPowerShell\v1.0 (typing powershell may fail; use the full path)" }
+$pathext = [string](Get-RegValue $envKey 'PATHEXT')
+$missingExt = @('.COM', '.EXE', '.BAT', '.CMD' | Where-Object { ($pathext -split ';') -notcontains $_ })
+if ($missingExt.Count) { Flag "PATHEXT is missing $($missingExt -join ', ') (now: $pathext). Programs stop running by name. Normal: .COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC"; $broken++ }
+$odd = @(($pathext -split ';') | Where-Object { $_ -and $_ -notin '.COM','.EXE','.BAT','.CMD','.VBS','.VBE','.JS','.JSE','.WSF','.WSH','.MSC','.CPL','.PY','.PYW' })
+if ($odd.Count) { Check "PATHEXT has unusual extensions: $($odd -join ', ')" }
+$comspec = [Environment]::ExpandEnvironmentVariables([string](Get-RegValue $envKey 'ComSpec'))
+if ($comspec -and $comspec -ine "$sysRoot\system32\cmd.exe") { Flag "ComSpec = $comspec (normal: $sysRoot\system32\cmd.exe). Batch files and many tools start this instead of cmd.exe"; $broken++ }
+$psmp = @(([string](Get-RegValue $envKey 'PSModulePath')) -split ';' | Where-Object { $_ } | ForEach-Object { [Environment]::ExpandEnvironmentVariables($_).TrimEnd('\') })
+foreach ($m in $psmp) { if ($m -notmatch "^(?i)($([regex]::Escape($sysRoot))|$([regex]::Escape($env:ProgramFiles))|$([regex]::Escape(${env:ProgramFiles(x86)})))") { Check "PSModulePath includes '$m': a module there can replace a built-in PowerShell command" } }
+foreach ($assoc in @(@('exefile', '"%1" %*'), @('batfile', '"%1" %*'), @('cmdfile', '"%1" %*'))) {
+    $cmdv = Get-RegValue "Registry::HKEY_CLASSES_ROOT\$($assoc[0])\shell\open\command" ''
+    if ($null -ne $cmdv -and $cmdv -ne $assoc[1]) { Flag "File association hijack: $($assoc[0]) opens with '$cmdv' (normal: $($assoc[1]))"; $broken++ }
+}
+$dotExe = Get-RegValue 'Registry::HKEY_CLASSES_ROOT\.exe' ''
+if ($dotExe -and $dotExe -ne 'exefile') { Flag ".exe files are associated with '$dotExe' instead of exefile"; $broken++ }
+if ($broken -eq 0) { Good 'No blocked tools, forced script policy, PATH/PATHEXT/ComSpec tampering or .exe association hijack found' }
+Info 'Debugger values on powershell.exe, cmd.exe or regedit.exe (IFEO) are listed under MALWARE + PERSISTENCE.'
+
 # ---------------------------------------------------------------- USER AUDITING
 Section 'USER AUDITING  (compare every name below with the README)'
 if (-not $isDC) {
@@ -371,6 +451,33 @@ else { Flag ("{0,-62} = {1}  (want 1-900)" -f 'Interactive logon: machine inacti
 $hku = Get-RegValue 'HKCU:\SOFTWARE\Policies\Microsoft\Windows\Installer' 'AlwaysInstallElevated'
 if ($hku -eq 1) { Flag 'HKCU AlwaysInstallElevated = 1' }
 
+# Settings Windows leaves secure when they are absent: only a planted value is a problem.
+$plantedOpts = @(
+    ,@('HKLM:\SYSTEM\CurrentControlSet\Control\Lsa','ForceGuest',0,'Network access: sharing and security model = Guest only (want Classic)')
+    ,@('HKLM:\SYSTEM\CurrentControlSet\Services\Netlogon\Parameters','DisablePasswordChange',0,'Domain member: disable machine account password changes')
+    ,@('HKLM:\SYSTEM\CurrentControlSet\Services\Netlogon\Parameters','RefusePasswordChange',0,'Domain controller: refuse machine account password changes')
+    ,@('HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager','SafeDllSearchMode',1,'Safe DLL search mode')
+    ,@('HKLM:\SOFTWARE\Policies\Microsoft\Windows\Installer','EnableUserControl',0,'Windows Installer: allow user control over installs')
+    ,@('HKLM:\SYSTEM\CurrentControlSet\Services\LanmanWorkstation\Parameters','AllowInsecureGuestAuth',0,'SMB client: insecure guest logons')
+    ,@('HKLM:\SOFTWARE\Policies\Microsoft\Windows\LanmanWorkstation','AllowInsecureGuestAuth',0,'SMB client: insecure guest logons (policy)')
+    ,@('HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers\PointAndPrint','NoWarningNoElevationOnInstall',0,'Point and Print: no warning or elevation on install (PrintNightmare)')
+    ,@('HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers\PointAndPrint','UpdatePromptSettings',0,'Point and Print: no warning or elevation on driver update (PrintNightmare)')
+    ,@('HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers\PointAndPrint','RestrictDriverInstallationToAdministrators',1,'Point and Print: printer drivers only by administrators (PrintNightmare)')
+    ,@('HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient','EnableMulticast',0,'LLMNR turned on by policy (want off: attackers answer it to steal hashes)')
+)
+foreach ($o in $plantedOpts) {
+    $v = Get-RegValue $o[0] $o[1]
+    if ($null -ne $v -and [string]$v -ne [string]$o[2]) { Flag ("{0,-62} = {1}  (want {2})" -f $o[3], $v, $o[2]) }
+}
+$nss = @(Get-RegValue 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters' 'NullSessionShares') | Where-Object { $_ }
+if ($nss.Count) { Flag "Shares anyone can open without a password (NullSessionShares): $($nss -join ', ')" }
+$nsp = @(Get-RegValue 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters' 'NullSessionPipes') | Where-Object { $_ }
+$okPipes = if ($isDC) { @('netlogon', 'samr', 'lsarpc', 'browser') } else { @() }
+$badPipes = @($nsp | Where-Object { $_ -notin $okPipes })
+if ($badPipes.Count) { Flag "Named pipes anyone can open without a password (NullSessionPipes): $($badPipes -join ', ')$(if (-not $isDC) { ' (normally empty on a non-DC)' })" }
+$rrs = Get-RegValue 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' 'RestrictRemoteSAM'
+if ($rrs -and $rrs -match '\((A;[^)]*;;;(WD|AU|BU|AN|IU|NU))\)') { Flag "Restrict clients allowed to make remote calls to SAM lets $($Matches[2]) in: $rrs (want O:BAG:BAD:(A;;RC;;;BA))" }
+
 # ---------------------------------------------------------------- GROUP POLICY (Administrative Templates)
 Section 'GROUP POLICY: every configured Administrative Template setting (Registry.pol)'
 Info 'Same list as gpedit.msc > Administrative Templates > All Settings, sorted by State. Compare each with a baseline:'
@@ -442,6 +549,7 @@ if (-not $fwProfiles.Count) {
 foreach ($p in $fwProfiles) {
     if ($p.Enabled -eq 'True' -or $p.Enabled -eq $true) { Good "Firewall $($p.Name) profile enabled (inbound default: $($p.DefaultInboundAction))" } else { Flag "Firewall $($p.Name) profile is OFF" }
     if ([string]$p.DefaultInboundAction -eq 'Allow') { Flag "Firewall $($p.Name) profile ALLOWS inbound connections that match no rule (should be Block)" }
+    if ([string]$p.DefaultOutboundAction -eq 'Block') { Check "Firewall $($p.Name) profile BLOCKS outbound connections: this can stop updates and the score report from reaching the server unless the README asks for it" }
 }
 foreach ($pp in 'DomainProfile','PrivateProfile','PublicProfile') {
     if ((Get-RegValue "HKLM:\SOFTWARE\Policies\Microsoft\WindowsFirewall\$pp" 'DefaultInboundAction') -eq 0) { Flag "Group Policy makes the $pp firewall ALLOW unmatched inbound connections (WindowsFirewall\$pp DefaultInboundAction=0)" }

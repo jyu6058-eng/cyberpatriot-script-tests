@@ -75,7 +75,8 @@ fi
 # ------------------------------------------------------------ extract
 log "extracting"
 t0=$(date +%s)
-7z x -y -bd -p- -o"$W/ex" archive > "$OUT/extract.log" 2>&1 || { tail -20 "$OUT/extract.log"; die "extract failed"; }
+pwarg="-p-"; [ -n "${ARCHIVE_PW:-}" ] && pwarg="-p$ARCHIVE_PW"   # some images publish an extraction password
+7z x -y -bd "$pwarg" -o"$W/ex" archive > "$OUT/extract.log" 2>&1 || { tail -20 "$OUT/extract.log"; die "extract failed"; }
 rm -f archive
 log "extracted in $(( $(date +%s) - t0 ))s: $(du -sh "$W/ex" | cut -f1)"
 find "$W/ex" -type f -not -path '*/caches/*' -printf '%12s  %P\n' | sort -k2 > "$OUT/files.txt"
