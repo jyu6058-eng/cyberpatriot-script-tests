@@ -262,6 +262,8 @@ while :; do
     fi
     if (( done_at > 0 && el - done_at > 300 )); then log "guest said ALL DONE but did not power off; stopping VM"; stopped_by_us=1; mon quit; break; fi
     if (( el > VM_MINUTES * 60 )); then log "time limit reached; stopping VM"; stopped_by_us=1; mon "screendump $OUT/shots/final.png -f png"; sleep 3; mon quit; break; fi
+    # Two resets did not help: stop instead of idling until the time limit (it costs runner minutes).
+    if (( resets >= 2 && el - same_since >= 1200 && el - wr_since >= 1200 )); then log "still frozen 20 min after the second reset; giving up"; stopped_by_us=1; mon "screendump $OUT/shots/final.png -f png"; sleep 3; mon quit; break; fi
     done
     wait "$QPID" 2>/dev/null
     (( stopped_by_us )) && break
