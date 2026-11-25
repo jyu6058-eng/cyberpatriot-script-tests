@@ -244,6 +244,12 @@ Plant 'rdp-on' { SetReg 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server'
 # ---------- planted security options (values Windows keeps secure by default) and broken tools
 Plant 'defender-exclude-ext'  { Add-MpPreference -ExclusionExtension 'exe' -ErrorAction Stop }
 Plant 'mpssvc-account'      { SetReg 'HKLM:\SYSTEM\CurrentControlSet\Services\MpsSvc' 'ObjectName' 'LocalSystem' 'String' }   # King Arthur's Castle; applies only after a reboot
+Plant 'tool-missing-taskmgr' {
+    # My Little Pony deleted cmd.exe; deleting cmd.exe here would break the CI runner, so take Task Manager instead.
+    $f = "$sys32\taskmgr.exe"
+    takeown /f $f | Out-Null; icacls $f /grant '*S-1-5-32-544:F' | Out-Null
+    Rename-Item -LiteralPath $f -NewName 'taskmgr.exe.cptest' -ErrorAction Stop
+}
 Plant 'forceguest'            { SetReg 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' 'ForceGuest' 1 }
 Plant 'safedll-off'           { SetReg 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager' 'SafeDllSearchMode' 0 }
 Plant 'pointandprint-nowarn'  { SetReg 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers\PointAndPrint' 'NoWarningNoElevationOnInstall' 1 }

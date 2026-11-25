@@ -162,6 +162,12 @@ foreach ($assoc in @(@('exefile', '"%1" %*'), @('batfile', '"%1" %*'), @('cmdfil
 }
 $dotExe = Get-RegValue 'Registry::HKEY_CLASSES_ROOT\.exe' ''
 if ($dotExe -and $dotExe -ne 'exefile') { Flag ".exe files are associated with '$dotExe' instead of exefile"; $broken++ }
+# Core tools a "broken" image may delete (My Little Pony deleted cmd.exe)
+$coreTools = 'System32\cmd.exe', 'System32\conhost.exe', 'regedit.exe', 'System32\taskmgr.exe', 'System32\mmc.exe', 'System32\sc.exe', 'System32\net.exe', 'System32\reg.exe', 'System32\secedit.exe', 'System32\auditpol.exe', 'System32\gpupdate.exe', 'System32\sfc.exe', 'System32\services.msc', 'System32\eventvwr.msc', 'System32\taskschd.msc'
+foreach ($t in $coreTools) {
+    $f = Join-Path $env:SystemRoot $t
+    if (-not (Test-Path -LiteralPath $f)) { Flag "$f is MISSING (My Little Pony deleted cmd.exe). Restore it: sfc /scanfile=$f   (Harden.ps1 tries this)$(if ($t -like '*cmd.exe') { '. Meanwhile a 32-bit cmd.exe is in C:\Windows\SysWOW64' })"; $broken++ }
+}
 if ($broken -eq 0) { Good 'No blocked tools, forced script policy, PATH/PATHEXT/ComSpec tampering or .exe association hijack found' }
 Info 'Debugger values on powershell.exe, cmd.exe or regedit.exe (IFEO) are listed under MALWARE + PERSISTENCE.'
 

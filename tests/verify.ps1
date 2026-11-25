@@ -76,6 +76,7 @@ $detect = @(
     ,@('task-shutdown','Task that shuts the PC down','\\Oxygen .*shuts down, restarts or logs off the PC',$false,'b')
     ,@('svc-psexec-style','PsExec/Impacket-style service','Service ffUx runs an unsigned program straight from C:\\Windows',$false,'b')
     ,@('dns-plugin-dll','DNS server plugin DLL (DnsAdmins attack)','The DNS server loads a plugin DLL: C:\\Windows\\System32\\mkxproxyloader\.dll',$false,'b')
+    ,@('tool-missing-taskmgr','Core tool missing (taskmgr.exe)','taskmgr\.exe is MISSING',$true,'b')
     ,@('mpssvc-account','Firewall service logon account changed','Service MpsSvc logs on as .LocalSystem.',$true,'b')
     ,@('defender-exclude-ext','Defender ignores every .exe','Defender ignores EVERY \.exe file',$true,'b')
     ,@('forceguest','Guest-only sharing model','sharing and security model = Guest only',$true,'b')
@@ -229,6 +230,7 @@ if (Planted 'defender-ignore-severe') {
 }
 if (Planted 'mpssvc-depends-sense') { Rec 'Harden.ps1' 'Planted MpsSvc dependency removed, Windows ones kept' ((@((Get-Item 'HKLM:\SYSTEM\CurrentControlSet\Services\MpsSvc').GetValue('DependOnService')) -notcontains 'Sense') -and (@((Get-Item 'HKLM:\SYSTEM\CurrentControlSet\Services\MpsSvc').GetValue('DependOnService')) -contains 'mpsdrv')) }
 Rec 'No false positive' 'Normal service logon accounts not flagged' (-not (Has $before 'Service (BFE|EventLog|WinDefend|Dnscache|wuauserv) logs on as'))
+if (Planted 'tool-missing-taskmgr') { Rec 'Harden.ps1' 'Missing taskmgr.exe restored with sfc' (Test-Path "$env:windir\System32\taskmgr.exe") }
 if (Planted 'mpssvc-account') { Rec 'Harden.ps1' 'MpsSvc logon account set back to LocalService' ((RegVal 'HKLM:\SYSTEM\CurrentControlSet\Services\MpsSvc' 'ObjectName') -match '^(?i)NT AUTHORITY\\LocalService$') }
 Rec 'No false positive' 'Clean MpsSvc dependencies (mpsdrv, bfe, nsi) not flagged' ((Planted 'mpssvc-depends-sense') -or -not (Has $before 'MpsSvc depends on'))
 Rec 'Harden.ps1' 'SMB compression off (SMBGhost)' ((RegVal 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters' 'DisableCompression') -eq 1)

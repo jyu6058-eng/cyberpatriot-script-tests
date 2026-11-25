@@ -107,6 +107,20 @@ if (-not $DryRun) {
     Say '  To undo a registry key:  reg import "<backup>\<name>.reg"' 'DarkGray'
 } else { Say '  (skipped in dry run)' 'Yellow' }
 
+# ------------------------------------------------------------------ 0b. missing core tools
+# A "broken" image can delete Windows tools (My Little Pony deleted cmd.exe). sfc restores one file from Windows' own store.
+$missingTools = @('System32\cmd.exe', 'System32\conhost.exe', 'regedit.exe', 'System32\taskmgr.exe', 'System32\mmc.exe', 'System32\sc.exe', 'System32\net.exe', 'System32\reg.exe', 'System32\secedit.exe', 'System32\auditpol.exe', 'System32\gpupdate.exe', 'System32\services.msc', 'System32\eventvwr.msc', 'System32\taskschd.msc' |
+    ForEach-Object { Join-Path $env:SystemRoot $_ } | Where-Object { -not (Test-Path -LiteralPath $_) })
+if ($missingTools.Count) {
+    Step 'Restore missing Windows tools'
+    $sfc = Join-Path $env:SystemRoot 'System32\sfc.exe'
+    foreach ($f in $missingTools) {
+        $f2 = $f
+        if (Test-Path $sfc) { Run "restore $f2 (sfc /scanfile)" { & $sfc "/scanfile=$f2" | Out-Null; if (-not (Test-Path -LiteralPath $f2)) { throw 'sfc could not restore it; try DISM /Online /Cleanup-Image /RestoreHealth, then sfc again' } } }
+        else { Say "  $f2 is missing and so is sfc.exe - run DISM /Online /Cleanup-Image /RestoreHealth" 'Yellow' }
+    }
+}
+
 # ------------------------------------------------------------------ 1. account policy + user rights
 Step 'Account policy (password + lockout) and dangerous user rights'
 if ($isDC) {

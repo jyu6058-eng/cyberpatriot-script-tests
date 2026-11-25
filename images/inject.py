@@ -451,6 +451,16 @@ for name, folder in (('cmd.exe', 'Windows/System32'), ('powershell.exe', 'Window
 # "set __PSLockdownPolicy=" clears a planted constrained-language switch for this hook only.
 image_path = (launch['cmd.exe'] + ' /c set __PSLockdownPolicy=& start "" ' + launch['powershell.exe'] + ' '
               r'-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -EncodedCommand ' + enc)
+if not ci('Windows/System32/cmd.exe'):
+    # My Little Pony deletes cmd.exe. Then a short PowerShell starts the real hook detached and exits, so the
+    # service manager's start timeout cannot take the hook down with it.
+    ps_path = launch['powershell.exe'].replace('%SystemRoot%', '$env:SystemRoot')
+    outer = ("Remove-Item Env:__PSLockdownPolicy -ErrorAction SilentlyContinue; "
+             f'Start-Process -FilePath "{ps_path}" -WindowStyle Hidden -ArgumentList '
+             f"'-NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand {enc}'")
+    image_path = (launch['powershell.exe'] + ' -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand '
+                  + base64.b64encode(outer.encode('utf-16-le')).decode())
+    say('cmd.exe is MISSING on this image: the boot hook starts PowerShell directly')
 open(os.path.join(dst, 'imagepath.txt'), 'w', encoding='utf-8').write(image_path)
 
 h = hivex.Hivex(sysh, write=True)
