@@ -203,7 +203,11 @@ $regChecks = @(
     ,@('HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters','DisableIPSourceRouting',2)
     ,@('HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services','fAllowUnsolicited',0)
 )
-foreach ($r in $regChecks) { $v = RegVal $r[0] $r[1]; Rec 'Harden.ps1' ("{0} = {1}" -f $r[1], $r[2]) ([string]$v -eq [string]$r[2]) "is '$v'" }
+foreach ($r in $regChecks) {
+    $v = RegVal $r[0] $r[1]
+    $vs = if ($null -eq $v) { '' } else { [string]$v }   # an empty REG_MULTI_SZ comes back as "nothing", which [string] leaves as $null
+    Rec 'Harden.ps1' ("{0} = {1}" -f $r[1], $r[2]) ($vs -eq [string]$r[2]) "is '$vs'"
+}
 if (Planted 'autologon') {
     Rec 'Harden.ps1' 'Plain-text DefaultPassword removed' ($null -eq (RegVal 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' 'DefaultPassword'))
     Rec 'Harden.ps1' 'AutoAdminLogon = 0' ("$(RegVal 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' 'AutoAdminLogon')" -eq '0')

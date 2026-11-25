@@ -62,7 +62,8 @@ function Set-Reg([string]$Path, [string]$Name, $Value, [string]$Type = 'DWord') 
     $k = Get-Item -LiteralPath $Path -ErrorAction SilentlyContinue
     if ($k) { $old = $k.GetValue($Name, $null) }
     if ($null -ne $old -and [string]$old -eq [string]$Value) { return }
-    $msg = "{0}\{1}: {2} -> {3}" -f $Path, $Name, $(if ($null -eq $old) { '(not set)' } else { $old }), $Value
+    $show = { param($x) if ($null -eq $x) { '(not set)' } elseif ($x -is [array]) { if ($x.Count) { '(' + ($x -join ', ') + ')' } else { '(empty)' } } else { $x } }
+    $msg = "{0}\{1}: {2} -> {3}" -f $Path, $Name, (& $show $old), (& $show $Value)
     if ($DryRun) { Say "  would set $msg" 'Yellow'; return }
     if (-not $k) { New-Item -Path $Path -Force | Out-Null }   # only when the key is missing (New-Item -Force on an existing key wipes it)
     New-ItemProperty -LiteralPath $Path -Name $Name -Value $Value -PropertyType $Type -Force | Out-Null

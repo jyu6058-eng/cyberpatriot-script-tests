@@ -156,6 +156,21 @@ def dword(n):
     return {'key': None, 't': REG_DWORD, 'value': struct.pack('<I', n)}
 
 
+def fix_regf_checksum(path):
+    """Recompute the regf header checksum: XOR of the first 127 dwords, stored at 0x1FC."""
+    with open(path, 'r+b') as f:
+        hdr = f.read(512)
+        x = 0
+        for i in range(0, 0x1FC, 4):
+            x ^= int.from_bytes(hdr[i:i + 4], 'little')
+        if x == 0xFFFFFFFF:
+            x = 0xFFFFFFFE
+        elif x == 0:
+            x = 1
+        f.seek(0x1FC)
+        f.write(x.to_bytes(4, 'little'))
+
+
 def hive_dirty(path):
     with open(path, 'rb') as f:
         hdr = f.read(12)
@@ -369,6 +384,15 @@ if dirty:
         restored = os.path.join(OUT, 'SYSTEM.restored')
         r = apply_transaction_logs(sysh, log1, secondary_log_path=log2, restored_hive_path=restored)
         say(f'  regipy: {r}')
+        # regipy rewrites the sequence numbers and hbins size but not the header checksum,
+        # and hivex refuses a hive whose checksum is wrong (King Arthur's Castle).
+        fix_regf_checksum(restored)
+        try:
+            hivex.Hivex(restored)
+        except Exception as e:  # noqa: BLE001
+            raise RuntimeError(f'replayed hive still does not open in hivex ({e})')
+        orig = os.path.join(OUT, 'SYSTEM.dirty-original')
+        shutil.copy2(sysh, orig)
         shutil.copy2(restored, sysh)
         os.remove(restored)
         hl = os.path.join(dst, 'hivelogs')
@@ -376,8 +400,9 @@ if dirty:
         for lg in (log1, log2):
             if lg:
                 shutil.move(lg, hl)
+        say('  transaction logs applied; the original logs were moved to C:\\cptest\\hivelogs')
     except Exception as e:  # noqa: BLE001
-        say(f'  could not apply logs ({e}); editing anyway')
+        say(f'  could not apply logs ({e}); editing the hive without them (its last unsaved changes are lost)')
 
 boot = r"& ([scriptblock]::Create([IO.File]::ReadAllText('C:\cptest\run.ps1')))"
 enc = base64.b64encode(boot.encode('utf-16-le')).decode()

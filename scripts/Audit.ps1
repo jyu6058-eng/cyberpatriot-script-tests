@@ -153,7 +153,8 @@ if ($odd.Count) { Check "PATHEXT has unusual extensions: $($odd -join ', ')" }
 $comspec = [Environment]::ExpandEnvironmentVariables([string](Get-RegValue $envKey 'ComSpec'))
 if ($comspec -and $comspec -ine "$sysRoot\system32\cmd.exe") { Flag "ComSpec = $comspec (normal: $sysRoot\system32\cmd.exe). Batch files and many tools start this instead of cmd.exe"; $broken++ }
 $psmp = @(([string](Get-RegValue $envKey 'PSModulePath')) -split ';' | Where-Object { $_ } | ForEach-Object { [Environment]::ExpandEnvironmentVariables($_).TrimEnd('\') })
-foreach ($m in $psmp) { if ($m -notmatch "^(?i)($([regex]::Escape($sysRoot))|$([regex]::Escape($env:ProgramFiles))|$([regex]::Escape(${env:ProgramFiles(x86)})))") { Check "PSModulePath includes '$m': a module there can replace a built-in PowerShell command" } }
+$okRoots = (@($sysRoot, [string]$env:ProgramFiles, [string]${env:ProgramFiles(x86)}) | Where-Object { $_ } | ForEach-Object { [regex]::Escape($_.TrimEnd('\')) }) -join '|'
+foreach ($m in $psmp) { if ($m -notmatch "^(?i)($okRoots)") { Check "PSModulePath includes '$m': a module there can replace a built-in PowerShell command" } }
 foreach ($assoc in @(@('exefile', '"%1" %*'), @('batfile', '"%1" %*'), @('cmdfile', '"%1" %*'))) {
     $cmdv = Get-RegValue "Registry::HKEY_CLASSES_ROOT\$($assoc[0])\shell\open\command" ''
     if ($null -ne $cmdv -and $cmdv -ne $assoc[1]) { Flag "File association hijack: $($assoc[0]) opens with '$cmdv' (normal: $($assoc[1]))"; $broken++ }
