@@ -46,6 +46,7 @@ $productType = [int](Get-CimInstance Win32_OperatingSystem).ProductType   # 1 wo
 $isDC        = ($productType -eq 2)
 $meSid       = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 $meName      = $env:USERNAME
+$engineUserRx = '^(?i)(magistrate|aeacus|cyberpatriot|ccsclient)$'   # accounts a scoring engine runs as (Mushroom Kingdom: AD user MAGISTRATE)
 $stamp       = Get-Date -Format 'yyyyMMdd-HHmmss'
 $desktop     = [Environment]::GetFolderPath('Desktop')
 if (-not $desktop -or -not (Test-Path $desktop)) { $desktop = Join-Path $env:PUBLIC 'Desktop' }   # e.g. running as SYSTEM
@@ -627,7 +628,7 @@ if (-not $isDC) {
         else { Say "  Built-in Administrator '$($admin.Name)' is enabled. Disable it yourself if the README allows: Disable-LocalUser -Name '$($admin.Name)'" 'Yellow' }
     }
     if (-not $SkipUserFlags) {
-        foreach ($u in Get-LocalUser | Where-Object { $_.Enabled -and $_.SID.Value -notmatch '-(500|501|503|504)$' }) {
+        foreach ($u in Get-LocalUser | Where-Object { $_.Enabled -and $_.SID.Value -notmatch '-(500|501|503|504)$' -and $_.Name -notmatch $engineUserRx }) {
             if (-not $u.PasswordExpires -or -not $u.UserMayChangePassword) {
                 Run "user $($u.Name): password expires, user may change password" { Set-LocalUser -SID $u.SID -PasswordNeverExpires $false -UserMayChangePassword $true -ErrorAction Stop }
             }
@@ -643,7 +644,7 @@ if (-not $isDC) {
     if ($g -and $g.Enabled) { Run 'disable AD Guest account' { Disable-ADAccount -Identity $g -ErrorAction Stop } }
     if (-not $SkipUserFlags) {
         foreach ($u in Get-ADUser -Filter * -Properties PasswordNotRequired, DoesNotRequirePreAuth, AllowReversiblePasswordEncryption, PasswordNeverExpires, ServicePrincipalName) {
-            if ($u.SamAccountName -eq 'krbtgt') { continue }
+            if ($u.SamAccountName -eq 'krbtgt' -or $u.SamAccountName -match $engineUserRx) { continue }   # never touch a scoring engine's account
             if ($u.PasswordNotRequired)               { Run "AD $($u.SamAccountName): require a password"           { Set-ADUser $u -PasswordNotRequired $false -ErrorAction Stop
                                                             if ((Get-ADUser $u -Properties PasswordNotRequired).PasswordNotRequired) { throw 'still set after the change - the account probably has a blank password; give it a strong password, then try again' } } }
             if ($u.DoesNotRequirePreAuth)             { Run "AD $($u.SamAccountName): require Kerberos pre-auth"    { Set-ADAccountControl $u -DoesNotRequirePreAuth $false -ErrorAction Stop } }

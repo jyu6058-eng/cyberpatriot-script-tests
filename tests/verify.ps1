@@ -142,6 +142,10 @@ if (Planted 'user-lookalike') {
     Rec 'Users.ps1' 'Renamed-looking user mr.stevenson NOT deleted' ([bool](U 'mr.stevenson'))
     Rec 'Users.ps1' 'stanley.stevenson NOT auto-created (looks like mr.stevenson)' (-not (U 'stanley.stevenson'))
 }
+if (Planted 'user-magistrate') {
+    Rec 'No false positive' 'Scoring engine account magistrate not deleted by Users.ps1' ([bool](U 'magistrate'))
+    Rec 'No false positive' 'Scoring engine account magistrate untouched by Harden (password still never expires)' ((U 'magistrate') -and $null -eq (U 'magistrate').PasswordExpires)
+}
 Rec 'Users.ps1' 'README comment lines not created as users' (-not (Get-LocalUser | Where-Object { $_.Name -match '[()?]|Ian' }))
 Rec 'Users.ps1' 'carol (name followed by a comment) kept and enabled' ([bool](U 'carol') -and (U 'carol').Enabled)
 if (Planted 'user-hacker-admin')   { Rec 'Users.ps1' 'Unauthorized admin "hacker" deleted' (-not (U 'hacker')) }

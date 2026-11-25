@@ -28,6 +28,7 @@ Plant 'user-akim-admin'     { New-LocalUser -Name akim -Password $pw | Out-Null;
 Plant 'user-mlee-notadmin'  { New-LocalUser -Name mlee -Password $pw | Out-Null; Add-LocalGroupMember -SID 'S-1-5-32-545' -Member mlee }
 Plant 'user-carol-disabled' { New-LocalUser -Name carol -Password $pw -Disabled | Out-Null; Add-LocalGroupMember -SID 'S-1-5-32-545' -Member carol }
 Plant 'user-lookalike'      { New-LocalUser -Name 'mr.stevenson' -Password $pw -FullName 'Mr. Stevenson' | Out-Null }   # README lists stanley.stevenson
+Plant 'user-magistrate'     { New-LocalUser -Name magistrate -Password $pw -PasswordNeverExpires | Out-Null }   # a scoring engine's account (Mushroom Kingdom)
 Plant 'guest-enabled'       { Get-LocalUser | Where-Object { $_.SID.Value -like '*-501' } | Enable-LocalUser }
 
 # ---------- account policy + user rights (secedit)

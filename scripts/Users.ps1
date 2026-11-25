@@ -103,6 +103,7 @@ function New-StrongPassword {
     return -join ($chars | Sort-Object { Get-Random })
 }
 $skipRid = '-(500|501|502|503|504)$'   # Administrator, Guest, krbtgt, DefaultAccount, WDAGUtilityAccount
+$engineUserRx = '^(?i)(magistrate|aeacus|cyberpatriot|ccsclient)$'   # accounts a scoring engine runs as (Mushroom Kingdom has an AD user MAGISTRATE): never touch
 $changes = 0
 $deleted = New-Object 'System.Collections.Generic.HashSet[string]'   # SIDs deleted in this run
 $created = New-Object 'System.Collections.Generic.List[string]'      # names created in this run
@@ -123,6 +124,7 @@ if (-not $isDC) {
     $missingNames = @($authorized | Where-Object { $n = $_; -not ($local | Where-Object { $_.Name -ieq $n }) })
     foreach ($u in $local) {
         if ($u.SID.Value -match $skipRid -or $u.SID.Value -eq $meSid) { continue }
+        if ($u.Name -match $engineUserRx) { Write-Host "    $($u.Name): scoring engine account - leave it alone" -ForegroundColor DarkGray; continue }
         if (-not (In-List $u.Name $authorized)) {
             $la = Get-LookAlike $u.Name $u.FullName $missingNames
             if ($la) { Write-Host "[?] $($u.Name) may be README user '$la' under another name - check before deleting or creating anyone" -ForegroundColor Yellow; continue }
@@ -210,6 +212,7 @@ else {
     $missingNames = @($authorized | Where-Object { $n = $_; -not ($adUsers | Where-Object { $_.SamAccountName -ieq $n }) })
     foreach ($u in $adUsers) {
         if ($u.SID.Value -match $skipRid -or $u.SID.Value -eq $meSid -or $u.SamAccountName -ieq $me) { continue }
+        if ($u.SamAccountName -match $engineUserRx) { Write-Host "    $($u.SamAccountName): scoring engine account - leave it alone" -ForegroundColor DarkGray; continue }
         if (-not (In-List $u.SamAccountName $authorized)) {
             $la = Get-LookAlike $u.SamAccountName $u.Name $missingNames
             if ($la) { Write-Host "[?] $($u.SamAccountName) ($($u.Name)) may be README user '$la' under another logon name - check before deleting or creating anyone" -ForegroundColor Yellow; continue }
