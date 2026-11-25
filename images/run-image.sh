@@ -235,10 +235,10 @@ while :; do
         mon "screendump $shot -f png"; sleep 2
         # Freeze watchdog: the lock screen's clock changes every minute, so a non-blank screen that stays
         # identical for 15 minutes means Windows hung (seen once on Beyond Journey's End before any script ran).
-        # A blank display (screen turned off, PNG of a few KB) is normal and never counts.
+        # A blank display (screen turned off: a ~3 KB PNG) is normal and never counts; a frozen firmware screen is ~15 KB.
         if [ -s "$shot" ]; then
             h=$(md5sum < "$shot" | cut -c1-32); sz=$(stat -c %s "$shot")
-            if [ "$h" != "$last_shot_hash" ] || (( sz < 20000 )); then
+            if [ "$h" != "$last_shot_hash" ] || (( sz < 8000 )); then
                 last_shot_hash=$h; same_since=$el
             elif (( el - same_since >= 900 && resets < 2 )); then
                 log "screen unchanged for $(( (el - same_since) / 60 )) min and not blank: guest looks frozen; resetting the VM (the guest steps resume after a reboot)"
