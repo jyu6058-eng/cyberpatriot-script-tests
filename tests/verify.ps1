@@ -270,7 +270,8 @@ Import-Module WebAdministration -ErrorAction SilentlyContinue
 $site = 'IIS:\Sites\Default Web Site'
 if (Planted 'iis-weak') {
     Rec 'Harden.ps1' 'IIS directory browsing off' (-not (Get-WebConfigurationProperty -Filter /system.webServer/directoryBrowse -Name enabled -PSPath $site).Value)
-    Rec 'Harden.ps1' 'IIS detailed errors only for local requests' ("$(Get-WebConfigurationProperty -Filter /system.webServer/httpErrors -Name errorMode -PSPath $site)" -ne 'Detailed')
+    Rec 'Harden.ps1' 'IIS custom error pages (site)' ("$(Get-WebConfigurationProperty -Filter /system.webServer/httpErrors -Name errorMode -PSPath $site)" -eq 'Custom')
+    Rec 'Harden.ps1' 'IIS custom error pages (server)' ("$(Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter /system.webServer/httpErrors -Name errorMode)" -eq 'Custom')
     Rec 'Harden.ps1' 'IIS logging on' ([bool](Get-ItemProperty $site -Name logFile.enabled).Value)
 }
 if (Planted 'dns-weak') {

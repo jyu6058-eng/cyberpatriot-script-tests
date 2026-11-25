@@ -586,9 +586,15 @@ if (Get-Service W3SVC -ErrorAction SilentlyContinue) {
             if ($db -eq $true) { Run "site $($site.Name): directory browsing off" { Set-WebConfigurationProperty -Filter /system.webServer/directoryBrowse -Name enabled -Value $false -PSPath $ps -ErrorAction Stop } }
             $em = Get-WebConfigurationProperty -Filter /system.webServer/httpErrors -Name errorMode -PSPath $ps -ErrorAction SilentlyContinue
             if ($null -ne $em -and $em.PSObject.Properties['Value']) { $em = $em.Value }
-            if ([string]$em -eq 'Detailed') { Run "site $($site.Name): detailed errors only for local requests" { Set-WebConfigurationProperty -Filter /system.webServer/httpErrors -Name errorMode -Value 'DetailedLocalOnly' -PSPath $ps -ErrorAction Stop } }
+            # Custom, not DetailedLocalOnly: Mushroom Kingdom's guide scores "Custom error pages"
+            if ([string]$em -match '^Detailed') { Run "site $($site.Name): custom error pages (no detailed errors)" { Set-WebConfigurationProperty -Filter /system.webServer/httpErrors -Name errorMode -Value 'Custom' -PSPath $ps -ErrorAction Stop } }
         }
         if (-not $site.logFile.enabled) { Run "site $($site.Name): logging on" { Set-ItemProperty $ps -Name logFile.enabled -Value $true -ErrorAction Stop } }
+    }
+    if (Get-ChildItem IIS:\Sites -ErrorAction SilentlyContinue) {
+        $srv = Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter /system.webServer/httpErrors -Name errorMode -ErrorAction SilentlyContinue
+        if ($null -ne $srv -and $srv.PSObject.Properties['Value']) { $srv = $srv.Value }
+        if ($srv -and [string]$srv -ne 'Custom') { Run 'IIS server level: custom error pages' { Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter /system.webServer/httpErrors -Name errorMode -Value 'Custom' -ErrorAction Stop } }
     }
     foreach ($ap in Get-ChildItem IIS:\AppPools -ErrorAction SilentlyContinue) {
         if ([string]$ap.processModel.identityType -eq 'LocalSystem') { Say "  App pool '$($ap.Name)' runs as LocalSystem. Change it in IIS Manager > Application Pools > Advanced Settings > Identity = ApplicationPoolIdentity, then test the site." 'Yellow' }
